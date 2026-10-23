@@ -142,13 +142,15 @@ class SdAgenticRAGPipeline:
         max_passages: Optional[int] = None,
         max_tokens: Optional[int] = None,
         min_relevance_score: Optional[float] = None,
-        enable_citation_check: bool = True,
-        enable_relevance_gate: bool = True,
-        enable_pii_redact: bool = True,
-        enable_safety_filter: bool = False,
-        min_citations: int = 1,
-        relevance_threshold: float = 0.5,
-        guard_min_tokens: int = 10,
+        guard_enforce: Optional[bool] = None,  # None = use config (guard.*)
+        enable_citation_check: Optional[bool] = None,
+        enable_relevance_gate: Optional[bool] = None,
+        enable_pii_redact: Optional[bool] = None,
+        enable_safety_filter: Optional[bool] = None,
+        min_citations: Optional[int] = None,
+        relevance_threshold: Optional[float] = None,
+        guard_min_tokens: Optional[int] = None,
+        guard_max_tokens: Optional[int] = None,
         observability_enabled: bool = True,
         enable_tracing: Optional[bool] = None,
         enable_metrics: Optional[bool] = None
@@ -165,13 +167,15 @@ class SdAgenticRAGPipeline:
             max_passages: Maximum number of passages to include in grounded context (default: 5)
             max_tokens: Maximum token count for grounded context (default: 4000)
             min_relevance_score: Minimum rerank score to include (default: -3.0)
-            enable_citation_check: Whether to verify citations in answers (default: True)
-            enable_relevance_gate: Whether to check answer relevance (default: True)
-            enable_pii_redact: Whether to redact PII from answers (default: True)
-            enable_safety_filter: Whether to filter harmful content (default: False)
-            min_citations: Minimum citations required in answers (default: 1)
-            relevance_threshold: Minimum similarity for relevance check (default: 0.5)
-            guard_min_tokens: Minimum answer length in tokens (default: 10)
+            guard_enforce: Replace blocked answers with the standard refusal (default: guard.enforce)
+            enable_citation_check: Whether to verify citations in answers (default: guard.enable_citation_check)
+            enable_relevance_gate: Whether to check answer relevance (default: guard.enable_relevance_gate)
+            enable_pii_redact: Whether to redact PII from answers (default: guard.enable_pii_redact)
+            enable_safety_filter: Whether to filter harmful content (default: guard.enable_safety_filter)
+            min_citations: Minimum citations required in answers (default: guard.min_citations_per_answer)
+            relevance_threshold: Minimum similarity for relevance check (default: guard.relevance_threshold)
+            guard_min_tokens: Minimum answer length in tokens (default: guard.min_tokens)
+            guard_max_tokens: Maximum answer length in tokens (default: guard.max_tokens)
             observability_enabled: Whether to enable observability (default: True)
             enable_tracing: Override tracing setting (default: from config)
             enable_metrics: Override metrics setting (default: from config)
@@ -190,15 +194,21 @@ class SdAgenticRAGPipeline:
         )
         self.generate_enabled = generate_enabled
 
-        # Guard configuration
-        self.enable_citation_check = enable_citation_check
-        self.enable_relevance_gate = enable_relevance_gate
-        self.enable_pii_redact = enable_pii_redact
-        self.enable_safety_filter = enable_safety_filter
-        self.min_citations = min_citations
-        self.relevance_threshold = relevance_threshold
+        # Guard overrides; None falls back to config.yaml's guard: section
+        self.guard_overrides = {
+            "enforce": guard_enforce,
+            "enable_citation_check": enable_citation_check,
+            "enable_relevance_gate": enable_relevance_gate,
+            "enable_pii_redact": enable_pii_redact,
+            "enable_safety_filter": enable_safety_filter,
+            "min_citations_per_answer": min_citations,
+            "relevance_threshold": relevance_threshold,
+            "min_tokens": guard_min_tokens,
+            "max_tokens": guard_max_tokens,
+        }
+
+        # Grounding token budget (not the Guard's answer length limit)
         self.max_tokens = max_tokens if max_tokens is not None else 4000
-        self.min_tokens = guard_min_tokens
 
         # Observability configuration
         self.observability_enabled = observability_enabled
@@ -263,16 +273,9 @@ class SdAgenticRAGPipeline:
 
         # Initialize Guard: Validate answers
         if self.store_enabled and self.generate_enabled:
-            self.guard_pipeline = Guardrails(
-                enable_citation_check=self.enable_citation_check,
-                enable_relevance_gate=self.enable_relevance_gate,
-                enable_pii_redact=self.enable_pii_redact,
-                enable_safety_filter=self.enable_safety_filter,
-                min_citations_per_answer=self.min_citations,
-                relevance_threshold=self.relevance_threshold,
-                max_tokens=self.max_tokens,
-                min_tokens=self.min_tokens,
-                embedding_service=self.embed_service
+            self.guard_pipeline = create_guardrails(
+                embedding_service=self.embed_service,
+                **self.guard_overrides
             )
         else:
             self.guard_pipeline = None

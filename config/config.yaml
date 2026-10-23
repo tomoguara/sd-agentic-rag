@@ -1,0 +1,85 @@
+# SD Agentic RAG Configuration
+#
+# Model names, base URLs and embedding dimensions are NOT configured here.
+# They are owned by .env / sd-agentic-rag.cfg (see USE_OLLAMA_MODELS,
+# *_EMBEDDING_MODEL, *_CHAT_MODEL, *_EMBEDDING_MODEL_DIMM); model-name keys
+# found in this file are ignored with a warning.
+
+# OpenAI Configuration
+openai:
+  api_key_env: OPENAI_API_KEY
+  batch_size: 100
+
+# Stage 1 (Ingest) Configuration
+ingest:
+  chunk_size: 1000
+  chunk_overlap: 150
+  chunk_strategy: recursive  # recursive, token, semantic
+  clean_pii: true
+  chunk_header: true         # Prefix each chunk with title | service | type | tags before embedding
+
+# Stage 2 (Embed) Configuration
+embed:
+  batch_size: 100
+  output_directory: data/embedded
+  # Task instruction prepended to search queries for instruction-tuned embedding
+  # models (Qwen3-Embedding). Documents are embedded without it. Ignored for OpenAI.
+  query_instruction: "Given a customer support question, retrieve past support tickets whose resolution answers it"
+
+# Stage 3 (Store) Configuration
+store:
+  qdrant:
+    host: localhost
+    port: 6333
+    collection_name: tickets  # Prefix; effective name is tickets__<embedding-model-slug>
+    metrics: false
+  vector_db_path: data/vector_db
+  collection_name: tickets
+
+# Stage 4 (Retrieve) Configuration
+retrieve:
+  vector_weight: 0.7  # Weight for vector search results
+  bm25_weight: 0.3    # Weight for BM25 search results
+  k_rrf: 60           # RRF fusion parameter (reciprocal rank)
+  vector_top_k: 20    # Candidates from vector search
+  bm25_top_k: 20      # Candidates from BM25 search
+
+# Stage 5 (Re-rank) Configuration
+rerank:
+  enabled: true
+  model: BAAI/bge-reranker-v2-m3  # Cross-encoder model (local; not provider-specific). Scores are 0-1 (sigmoid)
+  top_k: 10           # Number of results to return after re-ranking
+  min_score: 0.05     # Minimum rerank score for ReRanker.rerank_with_metadata (pipeline cutoff is ground.min_relevance_score)
+  batch_size: 32      # Batch size for processing
+
+# Stage 6 (Ground) Configuration
+ground:
+  max_passages: 5     # Maximum number of passages to include in grounded context
+  max_tokens: 4000    # Maximum token count for grounded context
+  # Minimum rerank_score to include (bge-reranker-v2-m3 scale, 0-1). Only applied
+  # when re-ranking is on. Benchmarked: correct tickets scored 0.12-0.998,
+  # off-topic queries <= 0.0001. Re-tune if you change rerank.model.
+  min_relevance_score: 0.05
+
+# Stage 7 (Generate) Configuration
+generate:
+  temperature: 0.2    # Low temperature to reduce hallucination
+  max_tokens: 1000    # Maximum tokens in the generated answer
+  enable_citation_check: true
+
+# Guard (wrapper) Configuration
+guard:
+  enforce: true                  # Replace blocked answers with the standard refusal (false = report only)
+  enable_citation_check: true    # Every [CITATION:id] must be in the grounded context
+  min_citations_per_answer: 1    # Non-refusal answers need at least this many citations
+  enable_relevance_gate: true    # Question/answer cosine similarity check
+  relevance_threshold: 0.5       # Minimum similarity for the relevance gate
+  enable_pii_redact: true        # Redact SSN / card / email / phone from returned answers
+  enable_safety_filter: false    # Harmful-content pattern filter
+  min_tokens: 10                 # Minimum answer length (tokens, ~4 chars each)
+  max_tokens: 2000               # Maximum answer length (tokens)
+
+# Logging Configuration
+logging:
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

@@ -1,0 +1,53 @@
+@startuml agentic_loop_family
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam roundCorner 8
+title The family — 1× / 2× / Nx are the same loop with a different iteration count
+
+rectangle "1× — the base pattern (agent --max-iterations 1 ≡ answer)" as ONE #F0F4FF {
+  component "Planner\n(heuristic: retrieve once)" as P1
+  component "retrieve" as R1
+  component "Re-rank" as RR1
+  component "Ground" as G1
+  component "Critic\n(single pass)" as C1
+  component "Generate" as GEN1
+  component "Self-Review\n(single pass)" as SR1
+  P1 -right-> R1
+  R1 -right-> RR1
+  RR1 -right-> G1
+  G1 -right-> C1
+  C1 -right-> GEN1
+  GEN1 -right-> SR1
+}
+
+rectangle "2× — retrieve · inspect · re-retrieve\n“Is INC980201 resolved, and what is the status of its follow-up?”" as TWO #EAF7EA {
+  component "Iteration 1\nlookup INC980201\n+ retrieve follow-up" as I1
+  component "Critic\nstatus ✓ · follow-up ✗" as C2a
+  component "Planner refine\nre-query follow-up" as P2
+  component "Iteration 2\nretrieve → CHG980202\n(pooled with iteration 1)" as I2
+  component "Critic ✓ → Generate\n→ Self-Review ✓" as C2b
+  I1 -right-> C2a
+  C2a -right-> P2 : insufficient
+  P2 -right-> I2
+  I2 -right-> C2b
+}
+
+rectangle "Nx — the loop (default max_iterations = 3)" as NX #FFF3CD {
+  component "Planner" as PN
+  component "Tools\nretrieve · lookup ·\nfiltered_retrieve" as TN
+  component "Re-rank → Ground" as GN
+  component "Critic" as CN
+  component "Generate → Self-Review" as GENN
+  component "Exhaustion\nreserved best-effort draft\n(partial) or refusal" as EX
+  PN -right-> TN
+  TN -right-> GN
+  GN -right-> CN
+  CN -right-> GENN : sufficient
+  CN -up-> PN : insufficient
+  GENN -up-> PN : failed after revision
+  CN -down-> EX : budget hit
+}
+
+ONE -[hidden]down-> TWO
+TWO -[hidden]down-> NX
+@enduml

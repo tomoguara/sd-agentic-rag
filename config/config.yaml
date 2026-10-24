@@ -79,6 +79,36 @@ guard:
   min_tokens: 10                 # Minimum answer length (tokens, ~4 chars each)
   max_tokens: 2000               # Maximum answer length (tokens)
 
+# Agent (agentic loop, `sd-agentic-rag agent`) Configuration
+agent:
+  top_k: 5                       # Passages per tool call (as answer --top-k); --top-k overrides
+  planner:
+    mode: llm                    # llm (falls back to heuristic) | heuristic
+    max_sub_goals: 4
+    max_top_k: 20                # Cap when a refine doubles a sub-goal's top_k
+  critic:
+    mode: llm                    # llm (falls back to heuristic) | heuristic | both (strict)
+    min_similarity: 0.5          # Heuristic: sub-goal query vs grounded passage cosine
+  self_review:
+    mode: heuristic              # heuristic | llm (adds a tighten-only groundedness check)
+    min_citations: 1
+    min_cited_sentence_ratio: 0.5  # Cited sentences / sentences of 4+ words
+  budget:                        # Hard per-turn limits; one extra generate call is reserved for exhaustion
+    max_iterations: 3            # --max-iterations overrides; 1 = base pipeline (heuristic plan)
+    max_llm_calls: 12
+    max_total_tokens: 20000
+    max_wall_seconds: 120        # 3-4 sub-goals take 40-75 s per turn on local models (D19)
+    max_revisions: 1             # Self-Review regenerations per iteration
+  memory:
+    enabled: true                # --no-memory disables for a run
+    db_path: data/sd_agentic_memory.sqlite  # --db > $SD_AGENTIC_MEMORY_DB > this
+    recent_turns: 3              # Recent turns of the thread given to the Planner
+    turn_chars: 1500             # Per-turn text limit in the Planner prompt
+    long_term:
+      enabled: true              # Past-resolution hints (Planner only; never evidence)
+      top_k: 3
+      min_similarity: 0.75
+
 # Logging Configuration
 logging:
   level: INFO

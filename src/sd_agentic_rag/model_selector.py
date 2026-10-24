@@ -45,6 +45,15 @@ OPENAI_EMBEDDING_MODEL_DIMM (int, optional)
 OPENAI_CHAT_MODEL (str, default: gpt-4o-mini)
   - Model name for LLM when USE_OLLAMA_MODELS=false
 
+HTTPX_TIMEOUT (float seconds, default: 120)
+  - Request timeout for every OpenAI-compatible client (chat, embeddings,
+    dimension probe). Without it the openai library waits up to 600 s.
+    Must be a positive number.
+
+HTTPX_MAX_RETRIES (int, default: 2)
+  - Retries per request for every OpenAI-compatible client. Must be a
+    positive integer.
+
 Command-line environment variables take precedence over both .env and sd-agentic-rag.cfg.
 For example: USE_OLLAMA_MODELS=false uv run sd-agentic-rag ...
 """
@@ -119,6 +128,10 @@ if config_path.exists():
 
 # Command-line environment variables still take precedence
 # (they override both .env and sd-agentic-rag.cfg)
+
+# HTTP client defaults when HTTPX_TIMEOUT / HTTPX_MAX_RETRIES are unset
+DEFAULT_HTTPX_TIMEOUT = 120.0
+DEFAULT_HTTPX_MAX_RETRIES = 2
 
 
 class ModelSelector:
@@ -229,12 +242,61 @@ class ModelSelector:
         # Ollama API key is optional
         return os.getenv("OPENAI_API_KEY", "dummy-key-for-ollama")
 
+    def get_http_timeout(self) -> float:
+        """Request timeout in seconds for OpenAI-compatible clients (HTTPX_TIMEOUT).
+
+        Raises:
+            ValueError: If HTTPX_TIMEOUT is set but is not a positive number
+        """
+        raw = os.getenv("HTTPX_TIMEOUT")
+        if raw is None or raw.strip() == "":
+            return DEFAULT_HTTPX_TIMEOUT
+        try:
+            timeout = float(raw.strip())
+        except ValueError:
+            timeout = 0.0
+        if not timeout > 0 or timeout == float("inf"):
+            raise ValueError(
+                f"HTTPX_TIMEOUT must be a positive number of seconds, got {raw!r}. "
+                f"Fix it in .env or sd-agentic-rag.cfg, or unset it to use {DEFAULT_HTTPX_TIMEOUT:g}."
+            )
+        return timeout
+
+    def get_http_max_retries(self) -> int:
+        """Retries per request for OpenAI-compatible clients (HTTPX_MAX_RETRIES).
+
+        Raises:
+            ValueError: If HTTPX_MAX_RETRIES is set but is not a positive integer
+        """
+        raw = os.getenv("HTTPX_MAX_RETRIES")
+        if raw is None or raw.strip() == "":
+            return DEFAULT_HTTPX_MAX_RETRIES
+        try:
+            retries = int(raw.strip())
+        except ValueError:
+            retries = 0
+        if retries <= 0:
+            raise ValueError(
+                f"HTTPX_MAX_RETRIES must be a positive integer, got {raw!r}. "
+                f"Fix it in .env or sd-agentic-rag.cfg, or unset it to use {DEFAULT_HTTPX_MAX_RETRIES}."
+            )
+        return retries
+
     def get_client_kwargs(self) -> dict:
-        """Get kwargs for initializing OpenAI client."""
+        """Get kwargs for initializing OpenAI client.
+
+        Every OpenAI-compatible client (chat, embeddings, dimension probe, the
+        agent's JSON calls) is built from these kwargs, so the timeout and
+        retry settings apply everywhere.
+        """
         base_url = self.get_base_url()
         api_key = self.get_openai_api_key()
 
-        kwargs = {"api_key": api_key}
+        kwargs = {
+            "api_key": api_key,
+            "timeout": self.get_http_timeout(),
+            "max_retries": self.get_http_max_retries(),
+        }
         if base_url:
             kwargs["base_url"] = base_url
 
@@ -282,17 +344,10 @@ def get_client_kwargs() -> dict:
     """Get kwargs for initializing OpenAI client.
 
     Returns:
-        Dictionary with api_key and optionally base_url for OpenAI client
+        Dictionary with api_key, timeout, max_retries and optionally base_url
+        for OpenAI client
     """
-    selector = get_model_selector()
-    base_url = selector.get_base_url()
-    api_key = selector.get_openai_api_key()
-
-    kwargs = {"api_key": api_key}
-    if base_url:
-        kwargs["base_url"] = base_url
-
-    return kwargs
+    return get_model_selector().get_client_kwargs()
 
 
 def check_config_for_model_keys(config: Optional[Dict], config_path: str = "config/config.yaml") -> List[str]:

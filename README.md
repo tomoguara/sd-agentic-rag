@@ -13,6 +13,7 @@ A Production-Ready RAG (Retrieval-Augmented Generation) system for support desk 
 - **Guardrails**: Citation enforcement, relevance checking, PII redaction, and configurable refusal handling
 - **Observability**: Full tracing and metrics collection
 - **Evaluation Framework**: Measure answer quality, hallucination rates, and relevance
+- **Agentic Loop** (`agent`): the same stages, with Retrieve → Re-rank → Ground → Generate run in a bounded loop that a Planner controls, a Critic and a Self-Review keep honest, Memory feeds and a Guard wraps ([design](docs/Agentic_RAG_same_7_stages_last_4_in_a_Loop.md))
 
 ---
 
@@ -28,6 +29,7 @@ A Production-Ready RAG (Retrieval-Augmented Generation) system for support desk 
   - [Module Reference](#23-module-reference)
   - [Testing](#24-testing)
   - [Model Configuration](#25-model-configuration)
+  - [Agentic RAG Loop](#27-agentic-rag-loop)
 
 ---
 
@@ -191,6 +193,7 @@ sd-agentic-rag answer --help
 | Command | Description |
 |---------|-------------|
 | `answer` | Answer support questions with citations |
+| `agent` | Answer through the agentic loop (plan, retrieve, check, revise) with memory |
 | `evaluate` | Evaluate RAG responses with metrics against ground truth |
 | `triage` | Automatically categorize and prioritize incoming tickets |
 | `similar` | Find similar past tickets to the current issue |
@@ -249,6 +252,68 @@ Markdown with citations like `[CITATION:INC001]`. Use `--json` for structured ou
 - `replaced`: The answer was blocked and replaced with the standard refusal message
 - `actions`: List of guard checks applied
 
+#### `agent` - Answer Through the Agentic Loop
+
+`agent` answers through a bounded loop: Planner → Tool → Re-rank → Ground → Critic →
+Generate → Self-Review, wrapped by the Guard. It handles questions that need more than
+one piece of evidence ("is LAT001234 resolved and what was its SLA?"), follow-ups
+("what was its resolution?") and a first retrieval that misses. `answer` is unchanged
+and remains the single-pass baseline. See [Agentic RAG Loop](#27-agentic-rag-loop) for
+how it works.
+
+```bash
+# Single turn
+sd-agentic-rag agent --prompt "Is LAT001234 resolved and what was its SLA?"
+
+# Per-iteration trace (plans, tool calls, Critic / Self-Review verdicts, fallbacks)
+sd-agentic-rag agent --prompt "Why are API calls slow?" --verbose
+
+# Follow-ups in a thread, even across separate processes
+sd-agentic-rag agent --thread-id demo --prompt "Why are API calls slow?"
+sd-agentic-rag agent --thread-id demo --prompt "What was its resolution?"
+
+# Start the thread's conversation over (earlier turns stay in the audit)
+sd-agentic-rag agent --thread-id demo --new --prompt "Replica lag on DB01?"
+
+# Interactive chat: one question per line, `exit`/`quit` or end of input to stop
+sd-agentic-rag agent --chat --thread-id demo
+
+# The thread's current conversation, and every stored loop step
+sd-agentic-rag agent --history --thread-id demo
+sd-agentic-rag agent --audit --thread-id demo --full
+
+# Base-pipeline cost and behavior, no memory, JSON
+sd-agentic-rag agent --prompt "Why are API calls slow?" --max-iterations 1 --no-memory --json
+```
+
+| Option | Description |
+|--------|-------------|
+| `--prompt/-p`, `--chat`, `--history`, `--audit` | Mode - exactly one is required |
+| `--full` | With `--audit`: untruncated step text |
+| `--thread-id` | Conversation thread (default `default`) |
+| `--new` | Start a fresh conversation in the thread (in `--chat`, applies to the first turn) |
+| `--max-iterations N` | Loop iterations, N >= 1 (default `agent.budget.max_iterations` = 3); 1 = the base pipeline |
+| `--top-k` | Passages per tool call (default `agent.top_k` = 5) |
+| `--no-memory` | Neither read nor write memory; the database is not created |
+| `--db PATH` | Memory database; default `$SD_AGENTIC_MEMORY_DB`, else `agent.memory.db_path` (`data/sd_agentic_memory.sqlite`, git-ignored) |
+| `--config`, `--json`, `--verbose/-v`, `--debug` | As for the other commands; `--json` is not available with `--chat` |
+
+**Output**: the answer, its citations (ticket ID, score, retriever, tool), the Guard
+verdict and a loop summary (iterations, LLM calls, tokens, elapsed time, stop reason).
+`--json` prints one object with `answer`, `citations`, `partial`, `guard`, `loop` and
+`trace` (plus `grounded`, `iterations`, `stop_reason`, `thread_id`, `turn_no`).
+
+**Budget and `partial`**: every turn is capped (iterations 3, LLM calls 12, tokens
+20000, wall clock 120 s, revisions 1 per iteration - `agent.budget`). When a limit is hit
+before a draft passes, one reserved generate call writes a best-effort answer from all
+evidence grounded so far; if it passes Self-Review and the Guard it is returned with
+`partial: true` and the stop reason, otherwise the standard refusal. A turn makes at
+most `max_llm_calls + 1` LLM calls.
+
+**Exit codes**: 0 for an answer, a partial answer or a refusal; non-zero for an
+internal error (for example, Qdrant is not running). Option conflicts are usage
+errors (exit 2).
+
 #### `evaluate` - Evaluate RAG Responses
 
 ```bash
@@ -262,6 +327,18 @@ sd-agentic-rag evaluate \
 ```
 
 **Output**: Relevance score, answer quality, hallucination detection, context precision/recall, latency metrics.
+
+```bash
+# One query through the agent instead of answer (adds a `loop` object)
+sd-agentic-rag evaluate --prompt "Is LAT001234 resolved?" --agentic --json
+
+# Golden set: agent vs the single-pass baseline, with a JSON export
+sd-agentic-rag evaluate --golden-file data/eval/agentic_golden.json --compare --export results.json
+```
+
+`--prompt` and `--golden-file` are mutually exclusive; `--compare` and `--export` need
+`--golden-file`. See [Evaluating the agent](#evaluating-the-agent) for the golden-set
+workflow and metrics.
 
 #### `triage` - Ticket Triage and Categorization
 
@@ -582,13 +659,14 @@ ollama serve
 |--------|-------------|--------------|
 | `sd_agentic_guard.py` | Citation verification, PII redaction | `Guardrails` |
 | `sd_agentic_observability.py` | Tracing and metrics collection | `RAGPipelineObserver`, `MetricsCollector` |
-| `sd_agentic_eval.py` | Evaluation metrics and framework | `Evaluator`, `EvaluationPipeline` |
+| `sd_agentic_eval.py` | Evaluation metrics and framework; golden-set agent vs baseline | `Evaluator`, `EvaluationPipeline`, `GoldenSetEvaluator` |
 
 ### CLI Command Modules
 
 | Command | File | Purpose |
 |---------|------|---------|
 | `answer` | `rag_commands/rag_answer.py` | Full RAG pipeline for questions |
+| `agent` | `rag_commands/rag_agent.py` | Agentic loop: single turn, chat, history, audit |
 | `triage` | `rag_commands/rag_triage.py` | Ticket categorization |
 | `similar` | `rag_commands/rag_similar.py` | Find similar cases |
 | `escalate` | `rag_commands/rag_escalate.py` | Escalation handoffs |
@@ -820,6 +898,124 @@ export EMBEDDING_DIMENSIONS=2048
 1. Implement in `src/sd_agentic_rag/sd_agentic_retrieve.py`
 2. Register in `__init__.py`
 3. Update `SD AgenticRAGPipeline` to use your retriever
+
+## 2.7 Agentic RAG Loop
+
+> Agentic RAG = the same 7 stages, but the last 4 (Retrieve → Re-rank → Ground →
+> Generate) run inside a Loop a Planner controls, a Critic and a Self-Review keep
+> honest, Memory feeds context, and a Guard wraps it all.
+>
+> Design document: [Agentic RAG — "Same 7 stages, last 4 in a Loop"](docs/Agentic_RAG_same_7_stages_last_4_in_a_Loop.md)
+
+The offline phase (Ingest → Embed → Store) is unchanged. The `agent` command runs the
+online phase as a bounded loop over the same stage objects `answer` uses.
+
+![Agentic loop components](docs/images/agentic_loop_components.png)
+
+*Components* (PlantUML source: [`agentic_loop_components.puml`](docs/images/agentic_loop_components.puml))
+
+![Agentic loop sequence](docs/images/agentic_loop_sequence.png)
+
+*One turn, with the Critic before and Self-Review after generation* (source: [`agentic_loop_sequence.puml`](docs/images/agentic_loop_sequence.puml))
+
+![1x / 2x / Nx](docs/images/agentic_loop_family.png)
+
+*The family: 1× is the base pipeline, 2× re-retrieves once, Nx is the loop* (source: [`agentic_loop_family.puml`](docs/images/agentic_loop_family.puml))
+
+### Components
+
+| Component | Module | Job |
+|-----------|--------|-----|
+| Loop | `agent/loop.py` (`AgenticRAGLoop`) | Runs one turn: plan, run open sub-goals, ground, Critic, generate, Self-Review, refine; exhaustion |
+| Planner | `agent/planner.py` | Splits the question into sub-goals, each one tool call. `llm` (default) with a deterministic fallback (`planner_fallback`); `heuristic`: a lookup per ticket ID, a filtered retrieve when a known service / severity / ticket type is named, else one retrieve. Refines missing sub-goals |
+| Tools | `agent/tools.py` | `retrieve` (exactly `answer`'s retrieval), `lookup` (all chunks of a ticket ID), `filtered_retrieve` (filters on `service`, `severity`, `ticket_type`, `status`, applied to vector and BM25 sides). Evidence starts with the ticket's state line (`Status: Resolved \| Priority: P1 \| SLA: 240 min ...`) |
+| Ground | `agent/grounding.py` | Grounds the turn's evidence pool per sub-goal with `ContextGrounding`, merges, truncates; the result is the only citable allow-list |
+| Critic | `agent/critic.py` | Before generation: is the evidence enough for every sub-goal? `llm` (default, heuristic fallback `critic_fallback`), `heuristic` (passage-vector cosine), `both` (strict). Nothing grounded ⇒ insufficient with no LLM call |
+| Self-Review | `agent/self_review.py` | After generation: citations in the allow-list, `min_citations`, cited-sentence ratio; one revision with the reasons. Optional `llm` check can only fail a draft |
+| Guard | `agent/guard.py`, `agent/budget.py`, `agent/trace.py` | PII redaction of the question and all evidence, the hard budget, the final `Guardrails.process_answer`, the per-step trace |
+| Memory | `agent/memory.py` | One SQLite file: thread conversation, append-only step audit, past-resolution hints |
+
+**Bounded autonomy.** LLMs choose order and repetition only: plans are validated
+against the tool and filter allow-lists, every passage passes Ground, only ticket IDs
+grounded in the current turn can be cited, the deterministic gates cannot be overridden
+and the budget is hard.
+
+**1× equivalence.** With `--max-iterations 1` the Planner uses the heuristic "retrieve
+once" plan; with `--no-memory` and a plain question, `agent` grounds and cites the same
+tickets as `answer`.
+
+### Memory
+
+All memory lives in one SQLite file (`--db` > `$SD_AGENTIC_MEMORY_DB` >
+`agent.memory.db_path`, default `data/sd_agentic_memory.sqlite`, created on first use):
+
+- **Thread conversation** - each turn's question, answer and cited ticket IDs. The Planner
+  gets the last `agent.memory.recent_turns` turns, so "what was its resolution?" looks up
+  the ticket cited before. `--new` starts a fresh conversation; earlier turns stay stored.
+- **Step audit** - every loop step (plan, tool call with evidence ticket IDs, verdicts,
+  drafts, Guard actions, fallbacks, budget events), append-only; shown by `--audit`.
+- **Past resolutions** - questions whose answers passed every gate with at least one
+  verified citation, stored with the embedding model of their vector. Similar later
+  questions (any thread, same embedding model) get those ticket IDs as Planner hints.
+
+Memory is never evidence: remembered ticket IDs only plan lookups whose results must
+pass Ground again. PII is redacted before anything is written. Deleting the file resets
+all memory.
+
+### Configuration
+
+The `agent:` section of `config/config.yaml` holds the defaults: `top_k`,
+`planner` (`mode`, `max_sub_goals`, `max_top_k`), `critic` (`mode`,
+`min_similarity`), `self_review` (`mode`, `min_citations`,
+`min_cited_sentence_ratio`), `budget` (`max_iterations`, `max_llm_calls`,
+`max_total_tokens`, `max_wall_seconds`, `max_revisions`) and `memory` (`enabled`,
+`db_path`, `recent_turns`, `turn_chars`, `long_term`). Invalid values stop the command
+with an error naming the key.
+
+Every OpenAI-compatible client (chat, embeddings, the agent's JSON calls) uses
+`HTTPX_TIMEOUT` (seconds, default 120) and `HTTPX_MAX_RETRIES` (default 2) from
+`sd-agentic-rag.cfg` / `.env`, so a hung request cannot outlast the wall-clock budget
+by more than one timeout.
+
+### Evaluating the agent
+
+The golden set compares the agent with the single-pass `answer` baseline on curated data:
+
+- `data/agentic_demo_tickets.json` - 14 curated tickets (linked incident / follow-up
+  pairs, distinct status and SLA values, the same symptom in different services with
+  different fixes), merged into `data/merged_tickets.json` by
+  `uv run python scripts/merge_tickets.py`.
+- `data/eval/agentic_golden.json` - 21 queries tagged `1x` (one retrieval suffices),
+  `2x` (two pieces of evidence), `nx` (three or more) and `unanswerable` (must refuse),
+  each with its expected ticket IDs.
+
+```bash
+# Index the merged tickets for the active provider (once per provider)
+sd-agentic-rag ingest --data-path data/merged_tickets.json --wipe
+
+# Agent only
+sd-agentic-rag evaluate --golden-file data/eval/agentic_golden.json
+
+# Agent vs baseline, per-tag deltas, full results as JSON
+sd-agentic-rag evaluate --golden-file data/eval/agentic_golden.json --compare --export results.json -v
+```
+
+Metrics are deterministic. *Cited* means ticket IDs in the returned answer's citations
+that are in the grounded allow-list.
+
+| Metric | Definition |
+|--------|------------|
+| Citation recall | \|cited ∩ expected\| / \|expected\| (n/a for `unanswerable`) |
+| Citation precision | \|cited ∩ expected\| / \|cited\|; 1.0 when nothing is cited and nothing is expected |
+| Refusal correctness | refused on an `unanswerable` query, or answered any other query |
+| Loop cost | iterations, LLM calls, total tokens, latency |
+| Partial | share of answers returned as `partial` after budget exhaustion |
+
+The output has one row per query and runner and one aggregate row per tag; with
+`--compare` each tag shows baseline / agent / difference. The export also records the
+provider and the chat and embedding model names. Agent runs always disable memory. The
+set is small and hand-made: it demonstrates the mechanism and guards against
+regressions; it is not a quality benchmark.
 
 ---
 

@@ -109,6 +109,21 @@ class Config:
         return self._config.get("retrieve", {})
 
 
+# Metadata fields whose distinct values the agent's Planner can filter on
+KNOWN_VALUE_FIELDS = ("service", "severity", "ticket_type", "status")
+
+
+def collect_known_values(payloads: List[Dict]) -> Dict[str, List[str]]:
+    """Distinct non-empty values of KNOWN_VALUE_FIELDS across chunk payloads, sorted."""
+    values = {field: set() for field in KNOWN_VALUE_FIELDS}
+    for payload in payloads:
+        for field in KNOWN_VALUE_FIELDS:
+            value = (payload or {}).get(field)
+            if isinstance(value, str) and value.strip():
+                values[field].add(value)
+    return {field: sorted(found) for field, found in values.items()}
+
+
 def _bm25_tokenize(text: str) -> List[str]:
     """Lowercase word tokens with punctuation stripped ("API." -> "api")."""
     return re.findall(r"\w+", text.lower())
@@ -235,6 +250,7 @@ class HybridRetriever:
         self.k_rrf = k_rrf
         self.vector_top_k = vector_top_k
         self.bm25_top_k = bm25_top_k
+        self.known_values: Optional[Dict[str, List[str]]] = None
 
         # Build BM25 index from vector store if not provided
         if self.bm25_index is None:
@@ -279,10 +295,19 @@ class HybridRetriever:
             if texts:
                 self.bm25_index = BM25Index()
                 self.bm25_index.build(texts, doc_ids, payloads)
+            # Collected in the same scroll, so the Planner costs no extra store call
+            self.known_values = collect_known_values(payloads)
 
         except Exception as e:
             print(f"Warning: Could not build BM25 index from vector store: {e}")
             print("BM25 search will not be available. Consider providing a BM25 index.")
+
+    def known_metadata_values(self) -> Dict[str, List[str]]:
+        """Distinct service / severity / ticket_type / status values in the index."""
+        if self.known_values is None:
+            payloads = self.bm25_index.payloads if self.bm25_index else []
+            self.known_values = collect_known_values(payloads)
+        return self.known_values
 
     def rrf_fusion(
         self,

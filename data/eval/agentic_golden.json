@@ -1,0 +1,197 @@
+{
+  "description": "Golden queries for agentic vs single-pass evaluation. Tags: 1x = one retrieval suffices, 2x = two pieces of evidence, nx = three or more, unanswerable = must refuse.",
+  "queries": [
+    {
+      "id": "q01",
+      "query": "Why were the nightly backup jobs failing with 'No space left on device'?",
+      "tag": "1x",
+      "expected_ticket_ids": [
+        "INC980401"
+      ],
+      "expected_answer": "Snapshot retention was still 90 days; retention was cut to 30 days and 4 TB of expired snapshots were purged."
+    },
+    {
+      "id": "q02",
+      "query": "How was the credential stuffing attack on the customer login page stopped?",
+      "tag": "1x",
+      "expected_ticket_ids": [
+        "SEC980701"
+      ],
+      "expected_answer": "Attacking IP ranges were blocked at the WAF, login rate limiting was enabled and 12 accounts had passwords reset."
+    },
+    {
+      "id": "q03",
+      "query": "Why did the checkout API return HTTP 503 errors during the campaign traffic peak?",
+      "tag": "1x",
+      "expected_ticket_ids": [
+        "INC980301"
+      ],
+      "expected_answer": "The autoscaling group hit the regional vCPU quota; the quota was raised to 512 and the group maximum to 40."
+    },
+    {
+      "id": "q04",
+      "query": "Remote users were disconnected from the VPN every 60 minutes. What fixed it?",
+      "tag": "1x",
+      "expected_ticket_ids": [
+        "INC980501"
+      ],
+      "expected_answer": "The IPsec phase 2 rekey lifetimes were aligned to 28800 seconds on both gateways and dead peer detection was enabled."
+    },
+    {
+      "id": "q05",
+      "query": "Why was outbound email stuck in the SMTP relay queue?",
+      "tag": "1x",
+      "expected_ticket_ids": [
+        "INC980201"
+      ],
+      "expected_answer": "The relay's TLS certificate expired; it was renewed, Postfix reloaded and the queue flushed."
+    },
+    {
+      "id": "q06",
+      "query": "What fixed slow API endpoint response times caused by missing database indexes?",
+      "tag": "1x",
+      "expected_ticket_ids": [
+        "LAT001234"
+      ],
+      "expected_answer": "A composite index on user_id and timestamp, a larger connection pool and Redis query caching."
+    },
+    {
+      "id": "q07",
+      "query": "Is INC980201 resolved, and what is the status of its follow-up to automate certificate renewal?",
+      "tag": "2x",
+      "expected_ticket_ids": [
+        "INC980201",
+        "CHG980202"
+      ],
+      "expected_answer": "INC980201 is resolved; the follow-up CHG980202 is in progress."
+    },
+    {
+      "id": "q08",
+      "query": "What caused the DB01 replication lag incident, and what alerting was added as a follow-up?",
+      "tag": "2x",
+      "expected_ticket_ids": [
+        "INC980101",
+        "CHG980102"
+      ],
+      "expected_answer": "The analytics export saturated replica I/O; the follow-up added a Prometheus alert on replication lag over 60 seconds."
+    },
+    {
+      "id": "q09",
+      "query": "What are the status and SLA of ACC980601 and of PRF980801?",
+      "tag": "2x",
+      "expected_ticket_ids": [
+        "ACC980601",
+        "PRF980801"
+      ],
+      "expected_answer": "ACC980601 is New with a 720-minute SLA; PRF980801 is In Progress with a 240-minute SLA."
+    },
+    {
+      "id": "q10",
+      "query": "Is SEC980701 resolved and what was its SLA?",
+      "tag": "2x",
+      "expected_ticket_ids": [
+        "SEC980701"
+      ],
+      "expected_answer": "Yes, it is resolved; its SLA was 15 minutes."
+    },
+    {
+      "id": "q11",
+      "query": "What caused the checkout 503 incident, and what is the status of the capacity review that followed it?",
+      "tag": "2x",
+      "expected_ticket_ids": [
+        "INC980301",
+        "PRB980302"
+      ],
+      "expected_answer": "An exhausted vCPU quota; the capacity review PRB980302 is pending finance approval."
+    },
+    {
+      "id": "q12",
+      "query": "How were the VPN drops fixed for remote users, and for the laptop on a docking station?",
+      "tag": "2x",
+      "expected_ticket_ids": [
+        "INC980501",
+        "INC980502"
+      ],
+      "expected_answer": "Aligned IPsec rekey lifetimes for remote users; dock firmware update and disabled adapter power saving for the laptop."
+    },
+    {
+      "id": "q13",
+      "query": "Compare how the DB01 replication lag and the DB02 reporting query timeouts were handled. Which one is still open?",
+      "tag": "2x",
+      "expected_ticket_ids": [
+        "INC980101",
+        "PRF980801"
+      ],
+      "expected_answer": "DB01 lag was resolved by moving the analytics export; the DB02 timeouts (PRF980801) are still in progress pending an index rebuild."
+    },
+    {
+      "id": "q14",
+      "query": "Disks filled up in the backup server, the Prometheus server and the order service. How was each one fixed?",
+      "tag": "nx",
+      "expected_ticket_ids": [
+        "INC980401",
+        "INC980402",
+        "BUG980403"
+      ],
+      "expected_answer": "Backup retention cut to 30 days; Prometheus retention cut and volume extended; order service debug logging disabled and logrotate added."
+    },
+    {
+      "id": "q15",
+      "query": "What follow-up work came out of INC980201 and INC980301, and what is the status of each follow-up?",
+      "tag": "nx",
+      "expected_ticket_ids": [
+        "INC980201",
+        "CHG980202",
+        "INC980301",
+        "PRB980302"
+      ],
+      "expected_answer": "CHG980202 (certificate automation) is in progress; PRB980302 (capacity review) is pending."
+    },
+    {
+      "id": "q16",
+      "query": "What were the root causes of the two VPN disconnection problems and of the three disk full incidents?",
+      "tag": "nx",
+      "expected_ticket_ids": [
+        "INC980501",
+        "INC980502",
+        "INC980401",
+        "INC980402",
+        "BUG980403"
+      ]
+    },
+    {
+      "id": "q17",
+      "query": "What was the fix for the SMTP certificate expiry, the DB01 replication lag and the checkout 503 errors?",
+      "tag": "nx",
+      "expected_ticket_ids": [
+        "INC980201",
+        "INC980101",
+        "INC980301"
+      ]
+    },
+    {
+      "id": "q18",
+      "query": "How do I book a meeting room for the quarterly all-hands?",
+      "tag": "unanswerable",
+      "expected_ticket_ids": []
+    },
+    {
+      "id": "q19",
+      "query": "What is on the cafeteria menu this Friday?",
+      "tag": "unanswerable",
+      "expected_ticket_ids": []
+    },
+    {
+      "id": "q20",
+      "query": "How do I descale the office coffee machine's milk frother?",
+      "tag": "unanswerable",
+      "expected_ticket_ids": []
+    },
+    {
+      "id": "q21",
+      "query": "What is the status of ticket ZZZ999999?",
+      "tag": "unanswerable",
+      "expected_ticket_ids": []
+    }
+  ]
+}

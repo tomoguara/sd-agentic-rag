@@ -6,6 +6,7 @@ It provides sub-commands for various RAG operations.
 
 Usage:
     sd-agentic-rag answer --prompt "Your question here"
+    sd-agentic-rag agent --prompt "Is LAT001234 resolved and what was its SLA?"
     sd-agentic-rag evaluate --prompt "Your question here" --ground-truth "Expected answer"
     sd-agentic-rag triage --prompt "Ticket description"
     sd-agentic-rag similar --prompt "Current issue" --ticket-id REF-123
@@ -53,6 +54,84 @@ from .rag_commands import (
 from .sd_agentic_rag_pipeline import SdAgenticRAGPipeline
 
 
+AGENT_EPILOG = """
+Examples:
+  sd-agentic-rag agent --prompt "Is LAT001234 resolved and what was its SLA?"
+  sd-agentic-rag agent --prompt "Why are API calls slow?" --verbose
+  sd-agentic-rag agent --thread-id demo --prompt "What was its resolution?"
+  sd-agentic-rag agent --thread-id demo --new --prompt "Replica lag on DB01?"
+  sd-agentic-rag agent --chat --thread-id demo
+  sd-agentic-rag agent --history --thread-id demo
+  sd-agentic-rag agent --audit --thread-id demo --full
+  sd-agentic-rag agent --prompt "Why are API calls slow?" --max-iterations 1 --no-memory --json
+"""
+
+
+def _positive_int(value: str) -> int:
+    """argparse type: an integer >= 1."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be an integer >= 1, got {value!r}")
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be an integer >= 1, got {value!r}")
+    return number
+
+
+def validate_agent_args(parser: argparse.ArgumentParser, args) -> None:
+    """Usage errors for option combinations the mode group cannot express."""
+    if args.full and not args.audit:
+        parser.error("--full requires --audit")
+    if args.no_memory and (args.history or args.audit):
+        parser.error("--no-memory cannot be combined with --history or --audit")
+    if args.chat and args.json:
+        parser.error("--json is not supported with --chat")
+    if (args.history or args.audit) and (args.new or args.max_iterations is not None or args.top_k is not None):
+        parser.error("--new, --max-iterations and --top-k apply to --prompt and --chat only")
+    if args.prompt is not None and not args.prompt.strip():
+        parser.error("--prompt must not be empty")
+
+
+def validate_evaluate_args(parser: argparse.ArgumentParser, args) -> None:
+    """Usage errors for evaluate option combinations."""
+    if args.golden_file is None and (args.compare or args.export):
+        parser.error("--compare and --export require --golden-file")
+    if args.golden_file is not None and (args.agentic or args.ground_truth):
+        parser.error("--agentic and --ground-truth apply to --prompt only (a golden run uses the agent)")
+
+
+def run_agent_command(args) -> int:
+    """Run `agent` and return the exit code (0 for answers, partial answers and refusals)."""
+    from .rag_commands.rag_agent import RagAgentCommand
+
+    mode = "turn" if args.prompt is not None else "chat" if args.chat else "history" if args.history else "audit"
+    output_format = "json" if args.json else "markdown"
+    command = RagAgentCommand(verbose=args.verbose or args.debug, debug=args.debug)
+    try:
+        result = command.run(
+            mode=mode,
+            prompt=args.prompt,
+            thread_id=args.thread_id,
+            new=args.new,
+            max_iterations=args.max_iterations,
+            top_k=args.top_k,
+            no_memory=args.no_memory,
+            db=args.db,
+            config_path=args.config,
+            full=args.full,
+            output_format=output_format,
+        )
+    except Exception as e:
+        if args.debug:
+            import traceback
+            traceback.print_exc()
+        else:
+            print(f"[ERROR] {e}", file=sys.stderr)
+        return 1
+    print(command.format_output(result, output_format))
+    return 1 if "error" in result else 0
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(
@@ -62,6 +141,8 @@ def main():
         epilog="""
 Examples:
   sd-agentic-rag answer --prompt "How do I reset my password?"
+  sd-agentic-rag agent --prompt "Is LAT001234 resolved and what was its SLA?"
+  sd-agentic-rag agent --chat --thread-id demo
   sd-agentic-rag evaluate --prompt "What is Python?" --ground-truth "Python is a language"
   sd-agentic-rag triage --prompt "Customer reports latency issues"
   sd-agentic-rag similar --prompt "Database connection timeout" --ticket-id INC-001
@@ -105,15 +186,53 @@ Advanced options:
     answer_parser.add_argument("--debug", action="store_true", help="Debug mode")
     answer_parser.add_argument("--timeout", type=int, default=None, help="Request timeout")
     
+    # agent command
+    agent_parser = subparsers.add_parser(
+        "agent",
+        help="Answer through the agentic loop (plan, retrieve, check, revise)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=AGENT_EPILOG
+    )
+    agent_mode = agent_parser.add_mutually_exclusive_group(required=True)
+    agent_mode.add_argument("--prompt", "-p", help="Answer one question (single turn)")
+    agent_mode.add_argument("--chat", action="store_true", help="Interactive chat: one turn per line until exit/quit")
+    agent_mode.add_argument("--history", action="store_true", help="Show the thread's current conversation")
+    agent_mode.add_argument("--audit", action="store_true", help="Show every stored loop step of the thread")
+    agent_parser.add_argument("--full", action="store_true", help="With --audit: show untruncated step text")
+    agent_parser.add_argument("--thread-id", default="default", help="Conversation thread (default: default)")
+    agent_parser.add_argument("--new", action="store_true", help="Start a fresh conversation in the thread")
+    agent_parser.add_argument("--max-iterations", type=_positive_int, default=None,
+                              help="Loop iterations (>= 1; 1 = base pipeline; default: agent.budget.max_iterations)")
+    agent_parser.add_argument("--top-k", type=_positive_int, default=None, help="Passages per tool call (default: agent.top_k)")
+    agent_parser.add_argument("--no-memory", action="store_true", help="Neither read nor write agent memory")
+    agent_parser.add_argument("--db", default=None,
+                              help="Memory database (default: $SD_AGENTIC_MEMORY_DB or agent.memory.db_path)")
+    agent_parser.add_argument("--config", type=str, default=None, help="Config file path")
+    agent_parser.add_argument("--json", action="store_true", help="Output as JSON (single turn, history, audit)")
+    agent_parser.add_argument("--verbose", "-v", action="store_true", help="Verbose output (per-iteration trace)")
+    agent_parser.add_argument("--debug", action="store_true", help="Debug mode")
+
     # evaluate command
     eval_parser = subparsers.add_parser(
         "evaluate",
         help="Evaluate RAG responses with metrics",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Example: sd-agentic-rag evaluate --prompt 'What is Python?' --ground-truth 'Python is a language'"
+        epilog="""Examples:
+  sd-agentic-rag evaluate --prompt 'What is Python?' --ground-truth 'Python is a language'
+  sd-agentic-rag evaluate --prompt 'Is LAT001234 resolved?' --agentic --json
+  sd-agentic-rag evaluate --golden-file data/eval/agentic_golden.json --compare --export results.json"""
     )
-    eval_parser.add_argument("--prompt", "-p", required=True, help="Question to evaluate")
+    eval_source = eval_parser.add_mutually_exclusive_group(required=True)
+    eval_source.add_argument("--prompt", "-p", help="Question to evaluate")
+    eval_source.add_argument("--golden-file", type=str, default=None,
+                             help="Golden query set to evaluate (runs the agent; see --compare)")
     eval_parser.add_argument("--ground-truth", "-g", type=str, default=None, help="Expected answer")
+    eval_parser.add_argument("--compare", action="store_true",
+                             help="With --golden-file: also run the single-pass answer baseline and show deltas")
+    eval_parser.add_argument("--export", type=str, default=None, metavar="PATH",
+                             help="With --golden-file: write per-query results and aggregates as JSON")
+    eval_parser.add_argument("--agentic", action="store_true",
+                             help="With --prompt: evaluate through the agent instead of answer")
     eval_parser.add_argument("--config", type=str, default=None, help="Config file path")
     eval_parser.add_argument("--top-k", type=int, default=5, help="Results to retrieve")
     eval_parser.add_argument("--json", action="store_true", help="Output as JSON")
@@ -267,6 +386,12 @@ Examples:
         print(parser.format_help())
         sys.exit(0)
     
+    if args.command == "agent":
+        validate_agent_args(agent_parser, args)
+        sys.exit(run_agent_command(args))
+    if args.command == "evaluate":
+        validate_evaluate_args(eval_parser, args)
+
     # Run the appropriate command
     command_map = {
         "answer": ("rag_answer", "RagAnswerCommand"),

@@ -21,19 +21,35 @@ class RagEvaluateCommand:
         self.verbose = verbose or debug
         self.debug = debug
 
-    def run(self, prompt: str, ground_truth: Optional[str] = None,
-            config_path: Optional[str] = None, top_k: int = 5) -> Dict[str, Any]:
+    def run(self, prompt: Optional[str] = None, ground_truth: Optional[str] = None,
+            config_path: Optional[str] = None, top_k: int = 5,
+            golden_file: Optional[str] = None, compare: bool = False,
+            export: Optional[str] = None, agentic: bool = False,
+            pipeline: Any = None) -> Dict[str, Any]:
         """Run the evaluation command.
         
         Args:
-            prompt: User's question
+            prompt: User's question (mutually exclusive with golden_file)
             ground_truth: Optional ground truth answer for comparison
             config_path: Optional path to config file
             top_k: Number of results to retrieve
+            golden_file: Golden query set to run (agent by default)
+            compare: With golden_file, also run the single-pass `answer` baseline
+            export: With golden_file, write full results as JSON to this path
+            agentic: With prompt, evaluate through the agent instead of `answer`
+            pipeline: Optional pre-built SdAgenticRAGPipeline (tests)
             
         Returns:
             Dictionary with evaluation results
         """
+        if (prompt is None) == (golden_file is None):
+            return {"error": "Give exactly one of --prompt or --golden-file"}
+        if golden_file is None and (compare or export):
+            return {"error": "--compare and --export require --golden-file"}
+        if golden_file is not None:
+            return self.run_golden(golden_file, compare=compare, export=export,
+                                   config_path=config_path, top_k=top_k, pipeline=pipeline)
+
         from sd_agentic_rag import (
             SdAgenticRAGPipeline,
             create_evaluator,
@@ -44,10 +60,13 @@ class RagEvaluateCommand:
             print("[INFO] Initializing RAG Pipeline and Evaluator...")
         
         # Initialize RAG pipeline
-        rag_pipeline = SdAgenticRAGPipeline()
+        rag_pipeline = pipeline or SdAgenticRAGPipeline()
         
         # Initialize evaluator
         evaluator = create_evaluator()
+
+        if agentic:
+            return self._run_agentic(rag_pipeline, evaluator, prompt, ground_truth, config_path, top_k)
         
         # Evaluate the query
         try:
@@ -100,10 +119,151 @@ class RagEvaluateCommand:
                 "latency_ms": 0.0
             }
 
+    def _run_agentic(self, rag_pipeline, evaluator, prompt, ground_truth, config_path, top_k) -> Dict[str, Any]:
+        """Evaluate one query through the agentic loop (memory disabled)."""
+        import time
+        from sd_agentic_rag.agent import AgentConfig, AgenticRAGLoop
+        from sd_agentic_rag.model_selector import get_llm_model_name
+
+        try:
+            config = AgentConfig.load(config_path, top_k=top_k, no_memory=True)
+            start = time.time()
+            turn = AgenticRAGLoop(rag_pipeline, config).run_turn(prompt)
+            latency_ms = (time.time() - start) * 1000
+            eval_result = evaluator.evaluate(
+                query_id="eval-001", query_text=prompt, predicted_answer=turn.answer,
+                ground_truth=ground_truth, retrieved_context=turn.grounded, latency_ms=latency_ms
+            )
+            return {
+                "prompt": prompt,
+                "ground_truth": ground_truth,
+                "predicted_answer": eval_result.predicted_answer,
+                "relevance_score": eval_result.relevance_score,
+                "answer_quality_score": eval_result.answer_quality_score,
+                "hallucination_score": eval_result.hallucination_score,
+                "context_precision": eval_result.context_precision,
+                "context_recall": eval_result.context_recall,
+                "latency_ms": eval_result.latency_ms,
+                "model": get_llm_model_name(),
+                "timestamp": eval_result.timestamp,
+                "agentic": True,
+                "citations": turn.citations,
+                "partial": turn.partial,
+                "loop": turn.loop,
+            }
+        except Exception as e:
+            if self.debug:
+                raise
+            return {"error": str(e), "prompt": prompt, "agentic": True}
+
+    def run_golden(self, golden_file: str, compare: bool = False, export: Optional[str] = None,
+                   config_path: Optional[str] = None, top_k: int = 5, pipeline: Any = None) -> Dict[str, Any]:
+        """Run a golden query set through the agent (and the baseline with compare)."""
+        from sd_agentic_rag.sd_agentic_eval import (
+            GoldenSetEvaluator,
+            load_golden_set,
+            make_agent_runner,
+            make_baseline_runner,
+        )
+        from sd_agentic_rag.agent import AgentConfig
+        from sd_agentic_rag.model_selector import get_embedding_model_name, get_llm_model_name, use_ollama
+
+        try:
+            entries = load_golden_set(golden_file)
+            if pipeline is None:
+                import contextlib
+                from sd_agentic_rag import SdAgenticRAGPipeline
+                with contextlib.redirect_stdout(sys.stderr):
+                    pipeline = SdAgenticRAGPipeline()
+                if not pipeline.store_enabled:
+                    raise RuntimeError("Vector store is not available - is Qdrant running?")
+            runners = {}
+            if compare:
+                runners["baseline"] = make_baseline_runner(pipeline, top_k=top_k)
+            runners["agent"] = make_agent_runner(pipeline, AgentConfig.load(config_path, top_k=top_k))
+            progress = (lambda msg: print(f"[INFO] {msg}", file=sys.stderr)) if self.verbose else None
+            result = GoldenSetEvaluator(runners).evaluate(entries, progress=progress)
+        except Exception as e:
+            if self.debug:
+                raise
+            return {"error": str(e), "golden_file": golden_file}
+
+        result.update({
+            "golden_file": golden_file,
+            "compare": compare,
+            "provider": "ollama" if use_ollama() else "openai",
+            "chat_model": get_llm_model_name(),
+            "embedding_model": get_embedding_model_name(),
+        })
+        if export:
+            Path(export).parent.mkdir(parents=True, exist_ok=True)
+            with open(export, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2, default=str)
+            result["exported_to"] = export
+        return result
+
+    @staticmethod
+    def _fmt(value) -> str:
+        if value is None:
+            return "n/a"
+        if isinstance(value, bool):
+            return "yes" if value else "no"
+        if isinstance(value, float):
+            return f"{value:.2f}"
+        return str(value)
+
+    def format_golden(self, result: Dict[str, Any]) -> str:
+        """Markdown tables: one row per query and runner, one aggregate row per tag."""
+        fmt = self._fmt
+        runners = list(result["aggregates"])
+        lines = ["# Golden-Set Evaluation", "",
+                 f"**Golden file:** {result['golden_file']}  ",
+                 f"**Provider:** {result['provider']} | **Chat model:** {result['chat_model']} | "
+                 f"**Embedding model:** {result['embedding_model']}", ""]
+        lines += ["## Per query", "",
+                  "| ID | Tag | Runner | Recall | Precision | Refusal OK | Iterations | LLM calls | Tokens | Latency (ms) | Partial | Cited |",
+                  "|----|-----|--------|--------|-----------|------------|------------|-----------|--------|--------------|---------|-------|"]
+        for row in result["per_query"]:
+            for name in runners:
+                r = row["results"][name]
+                if "error" in r:
+                    lines.append(f"| {row['id']} | {row['tag']} | {name} | error: {r['error'][:60]} |||||||||")
+                    continue
+                lines.append(
+                    f"| {row['id']} | {row['tag']} | {name} | {fmt(r['recall'])} | {fmt(r['precision'])} | "
+                    f"{fmt(r['refusal_correct'])} | {r['iterations']} | {r['llm_calls']} | {r['total_tokens']} | "
+                    f"{r['latency_ms']:.0f} | {fmt(r['partial'])} | {', '.join(r['cited_ticket_ids']) or '-'} |")
+        lines += ["", "## Per tag", ""]
+        if "deltas" in result:
+            lines += ["| Tag | Queries | Recall (base / agent / Δ) | Precision (base / agent / Δ) | "
+                      "Refusal OK (base / agent / Δ) | Agent iterations | Agent LLM calls | Agent partial |",
+                      "|-----|---------|------|------|------|------|------|------|"]
+            base, agent = result["aggregates"]["baseline"], result["aggregates"]["agent"]
+            for tag, delta in result["deltas"].items():
+                b, a = base[tag], agent[tag]
+                cells = [f"{fmt(b[m])} / {fmt(a[m])} / {fmt(delta[m])}" for m in ("recall", "precision", "refusal_correct")]
+                lines.append(f"| {tag} | {a['queries']} | " + " | ".join(cells) +
+                             f" | {fmt(a['iterations'])} | {fmt(a['llm_calls'])} | {fmt(a['partial_rate'])} |")
+        else:
+            lines += ["| Runner | Tag | Queries | Recall | Precision | Refusal OK | Iterations | LLM calls | Tokens | Latency (ms) | Partial rate | Fallbacks |",
+                      "|--------|-----|---------|--------|-----------|------------|------------|-----------|--------|--------------|--------------|-----------|"]
+            for name, by_tag in result["aggregates"].items():
+                for tag, a in by_tag.items():
+                    lines.append(f"| {name} | {tag} | {a['queries']} | {fmt(a['recall'])} | {fmt(a['precision'])} | "
+                                 f"{fmt(a['refusal_correct'])} | {fmt(a['iterations'])} | {fmt(a['llm_calls'])} | "
+                                 f"{fmt(a['total_tokens'])} | {fmt(a['latency_ms'])} | {fmt(a['partial_rate'])} | "
+                                 f"{a['fallbacks']} |")
+        if result.get("exported_to"):
+            lines += ["", f"Full results exported to `{result['exported_to']}`."]
+        lines.append("")
+        return "\n".join(lines)
+
     def format_output(self, result: Dict[str, Any], output_format: str = "markdown") -> str:
         """Format the output for display."""
         if output_format == "json":
             return json.dumps(result, indent=2, default=str)
+        if "per_query" in result and "error" not in result:
+            return self.format_golden(result)
         
         # Markdown format
         lines = []
@@ -156,6 +316,15 @@ class RagEvaluateCommand:
         
         if result.get('model'):
             lines.append(f"**Model:** {result.get('model')}")
+            lines.append("")
+
+        loop = result.get('loop')
+        if loop:
+            lines.append("## Agent Loop")
+            lines.append("")
+            lines.append(f"- Iterations: {loop.get('iterations')} | LLM calls: {loop.get('llm_calls')} | "
+                         f"Tokens: {loop.get('total_tokens')} | Stop reason: {loop.get('stop_reason')} | "
+                         f"Partial: {result.get('partial')}")
             lines.append("")
         
         if result.get('timestamp'):

@@ -1,0 +1,55 @@
+@startuml agentic_loop_sequence
+skinparam shadowing false
+title AgenticRAGLoop.run_turn() — Critic (pre) and Self-Review (post)
+
+actor       User
+participant "AgentGuard\n+ BudgetTracker" as GD
+participant "AgentMemory" as M
+participant "Planner" as P
+participant "Tools" as T
+participant "Re-rank" as RR
+participant "Ground" as G
+participant "Critic" as C
+participant "Generate" as GEN
+participant "Self-Review" as REV
+
+User -> GD : question
+GD -> GD : redact PII
+GD -> M : recent turns + cited IDs, past-resolution hints
+GD -> P : plan(question, context)
+note right of P : LLM plan, validated against the tool\nand filter allow-lists; invalid ⇒ heuristic\n(planner_fallback). 1 iteration ⇒ heuristic.
+
+loop iteration ≤ max_iterations (budget checked before every tool / LLM call)
+  P -> T : run open sub-goals
+  T -> RR : candidates (retrieve, filtered_retrieve)
+  RR --> G : top-k
+  T --> G : lookup chunks (exact fetch, not re-ranked)
+  note over G : redacted evidence pooled across iterations;\nground per sub-goal, merge, truncate ⇒ allow-list
+  G -> C : grounded context
+  alt nothing grounded
+    C --> P : insufficient (no LLM call)
+  else insufficient
+    C --> P : missing sub-goals + refine hint
+    P -> P : refine (broaden / re-query; repeats skipped)
+  else sufficient
+    C -> GEN : grounded context
+    GEN -> REV : draft
+    alt passes (citations ⊆ allow-list, enough cited)
+      REV -> GD : draft
+      GD -> GD : Guardrails.process_answer(allow-list)
+      GD --> User : answer + citations + loop summary
+    else fails, revision budget left
+      REV -> GEN : regenerate with reasons
+    else fails again
+      REV --> P : refine
+    end
+  end
+end
+
+opt budget exhausted or nothing left to try
+  GD -> GEN : reserved call: best-effort draft over all grounded evidence
+  GEN -> REV : draft (deterministic checks only)
+  GD --> User : partial answer (gated) or standard refusal
+end
+GD -> M : save turn (+ resolution if allowed and cited); steps appended as they happen
+@enduml

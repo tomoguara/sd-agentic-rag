@@ -1,5 +1,6 @@
 """RAG Command modules for CLI interface."""
 from sd_agentic_rag.rag_commands.rag_answer import RagAnswerCommand
+from sd_agentic_rag.rag_commands.rag_agent import RagAgentCommand
 from sd_agentic_rag.rag_commands.rag_triage import RagTriageCommand
 from sd_agentic_rag.rag_commands.rag_similar import RagSimilarCommand
 from sd_agentic_rag.rag_commands.rag_ingest import RagIngestCommand
@@ -11,6 +12,7 @@ from sd_agentic_rag.rag_commands.rag_gap import RagGapCommand
 
 __all__ = [
     "RagAnswerCommand",
+    "RagAgentCommand",
     "RagTriageCommand", 
     "RagSimilarCommand",
     "RagIngestCommand",

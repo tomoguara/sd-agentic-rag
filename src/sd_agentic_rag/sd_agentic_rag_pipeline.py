@@ -6,7 +6,7 @@ combining all stages into a unified pipeline.
 import os
 import json
 import uuid
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from pathlib import Path
 
 # Stage 1 imports
@@ -61,6 +61,56 @@ from sd_agentic_rag.sd_agentic_observability import (
     MetricsCollector,
     Config as ObservabilityConfig,
 )
+
+
+# Candidates retrieved before re-ranking (or top_k selection) on the answer path
+RETRIEVE_CANDIDATES = 100
+
+
+def rank_candidates(
+    rerank_pipeline: Optional[ReRankerPipeline],
+    query: str,
+    candidates: List[Dict],
+    top_k: int,
+    rerank_enabled: bool
+) -> List[Dict]:
+    """Re-rank candidates and keep top_k, or keep the first top_k when re-ranking is off."""
+    if rerank_pipeline and rerank_enabled:
+        return rerank_pipeline.run(
+            query=query,
+            documents=candidates,
+            top_k=top_k,
+            enabled=True
+        )
+    return candidates[:top_k]
+
+
+def retrieve_and_rank(
+    hybrid_retriever: HybridRetriever,
+    rerank_pipeline: Optional[ReRankerPipeline],
+    query: str,
+    top_k: int,
+    rerank_enabled: bool,
+    vector_top_k: Optional[int] = None,
+    bm25_top_k: Optional[int] = None,
+    query_embedding: Optional[List[float]] = None
+) -> Tuple[List[Dict], List[Dict]]:
+    """The base retrieve-then-(re-rank | top_k) step used by `answer` and the agent.
+
+    Returns:
+        (hybrid_results, ranked_results)
+    """
+    retrieve_kwargs = {
+        "query": query,
+        "top_k": RETRIEVE_CANDIDATES,  # Retrieve many candidates for re-ranking
+        "vector_top_k": vector_top_k,
+        "bm25_top_k": bm25_top_k
+    }
+    if query_embedding is not None:
+        retrieve_kwargs["query_embedding"] = query_embedding
+    hybrid_results = hybrid_retriever.retrieve(**retrieve_kwargs)
+    ranked = rank_candidates(rerank_pipeline, query, hybrid_results, top_k, rerank_enabled)
+    return hybrid_results, ranked
 
 
 class SdAgenticRAGPipeline:
@@ -591,26 +641,17 @@ class SdAgenticRAGPipeline:
         if not self.hybrid_retriever:
             raise RuntimeError("Hybrid retriever not initialized")
             
-        # Get hybrid search results - retrieve all candidates (no top_k limit)
-        # Use a large top_k to ensure we get enough candidates for re-ranking
-        hybrid_results = self.hybrid_retriever.retrieve(
+        # Retrieve all candidates, then re-rank (or take top_k); shared with the
+        # agent's RetrieveTool so `answer` and `agent` cannot drift
+        hybrid_results, reranked_results = retrieve_and_rank(
+            hybrid_retriever=self.hybrid_retriever,
+            rerank_pipeline=self.rerank_pipeline,
             query=query_text,
-            top_k=100,  # Retrieve many candidates for re-ranking
+            top_k=top_k,
+            rerank_enabled=rerank_enabled if rerank_enabled is not None else self.rerank_enabled,
             vector_top_k=vector_top_k,
             bm25_top_k=bm25_top_k
         )
-        
-        # Apply re-ranking
-        if self.rerank_pipeline and (rerank_enabled if rerank_enabled is not None else self.rerank_enabled):
-            reranked_results = self.rerank_pipeline.run(
-                query=query_text,
-                documents=hybrid_results,
-                top_k=top_k,
-                enabled=True
-            )
-        else:
-            # Use raw hybrid results if re-ranking is disabled
-            reranked_results = hybrid_results[:top_k]
             
         # Apply context grounding
         grounded_context = None

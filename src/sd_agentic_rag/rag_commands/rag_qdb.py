@@ -11,6 +11,21 @@ from typing import Dict, Any, Optional, List
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
+# Ticket state shown by `qdb --ticket-id` (payload field -> label)
+_STATE_LABELS = (
+    ("Type", "ticket_type"),
+    ("Status", "status"),
+    ("Priority", "priority"),
+    ("SLA (minutes)", "sla_minutes"),
+    ("Assigned To", "assigned_to"),
+)
+
+
+def _state_fields(payload: Dict) -> Dict:
+    """Ticket state metadata from a chunk payload, for `qdb --ticket-id`."""
+    return {key: payload.get(key) for _, key in _STATE_LABELS}
+
+
 class RagQdbCommand:
     """Command to query Qdrant database directly."""
 
@@ -172,6 +187,7 @@ class RagQdbCommand:
                                 "chunk_index": payload_data.get('chunk_index', 'N/A'),
                                 "service": payload_data.get('service', 'N/A'),
                                 "severity": payload_data.get('severity', 'N/A'),
+                                **_state_fields(payload_data),
                                 "text_preview": payload_data.get('chunk_text', '')[:200],
                                 "full_text": payload_data.get('chunk_text', ''),
                                 "vector_valid": vector_valid,
@@ -184,6 +200,7 @@ class RagQdbCommand:
                                 "chunk_index": payload.get('chunk_index', 'N/A'),
                                 "service": payload.get('service', 'N/A'),
                                 "severity": payload.get('severity', 'N/A'),
+                                **_state_fields(payload),
                                 "text_preview": payload.get('chunk_text', '')[:200],
                                 "full_text": payload.get('chunk_text', ''),
                                 "vector_valid": "not_found",
@@ -196,6 +213,7 @@ class RagQdbCommand:
                             "chunk_index": payload.get('chunk_index', 'N/A'),
                             "service": payload.get('service', 'N/A'),
                             "severity": payload.get('severity', 'N/A'),
+                            **_state_fields(payload),
                             "text_preview": payload.get('chunk_text', '')[:200],
                             "full_text": payload.get('chunk_text', ''),
                             "vector_valid": f"error: {str(e)}",
@@ -224,6 +242,7 @@ class RagQdbCommand:
                         "chunk_index": payload.get('chunk_index', 'N/A'),
                         "service": payload.get('service', 'N/A'),
                         "severity": payload.get('severity', 'N/A'),
+                        **_state_fields(payload),
                         "text_preview": payload.get('chunk_text', '')[:200],
                         "full_text": payload.get('chunk_text', ''),
                         "vector_valid": "unknown",
@@ -412,6 +431,9 @@ class RagQdbCommand:
                     lines.append(f"- **Chunk Index:** {chunk.get('chunk_index', 'N/A')}")
                     lines.append(f"- **Service:** {chunk.get('service', 'N/A')}")
                     lines.append(f"- **Severity:** {chunk.get('severity', 'N/A')}")
+                    for label, key in _STATE_LABELS:
+                        if chunk.get(key) not in (None, ""):
+                            lines.append(f"- **{label}:** {chunk[key]}")
                     # Only show vector info for ticket-id searches (when vector_valid is present)
                     if 'vector_valid' in chunk and chunk.get('vector_valid') != 'unknown':
                         lines.append(f"- **Vector Valid:** {chunk.get('vector_valid', 'unknown')}")

@@ -24,6 +24,31 @@ except ImportError:
 from sd_agentic_rag.sd_agentic_guard import STANDARD_REFUSAL
 
 
+# Default system prompt for grounded answers (also the base of the agent's revision prompt)
+GROUNDED_SYSTEM_PROMPT = """
+You are a support desk assistant answering incident tickets.
+Your answer MUST be grounded ONLY in the provided context.
+Follow these rules STRICTLY:
+
+1. Use ONLY information from the provided context
+2. Add citation markers like [CITATION:ticket_id] after each claim
+3. If the context doesn't contain enough information, say "I cannot find sufficient information in the ticket data to answer this question"
+4. Do NOT invent, infer, or hallucinate information
+5. Keep answers concise and actionable
+6. If multiple citations support the same point, list them all: [CITATION:ticket1][CITATION:ticket2]
+
+Context format:
+[CITATION:ticket_id]
+Passage content...
+
+Question format:
+User question
+
+Answer format:
+Your answer with [CITATION:...] markers embedded.
+"""
+
+
 
 @dataclass
 class GeneratedAnswer:
@@ -183,31 +208,9 @@ class AnswerGenerator:
         Returns:
             GeneratedAnswer with answer text and metadata
         """
+
         # Default system prompt enforces grounded responses
-        default_system_prompt = """
-You are a support desk assistant answering incident tickets.
-Your answer MUST be grounded ONLY in the provided context.
-Follow these rules STRICTLY:
-
-1. Use ONLY information from the provided context
-2. Add citation markers like [CITATION:ticket_id] after each claim
-3. If the context doesn't contain enough information, say "I cannot find sufficient information in the ticket data to answer this question"
-4. Do NOT invent, infer, or hallucinate information
-5. Keep answers concise and actionable
-6. If multiple citations support the same point, list them all: [CITATION:ticket1][CITATION:ticket2]
-
-Context format:
-[CITATION:ticket_id]
-Passage content...
-
-Question format:
-User question
-
-Answer format:
-Your answer with [CITATION:...] markers embedded.
-"""
-
-        effective_system_prompt = system_prompt or default_system_prompt
+        effective_system_prompt = system_prompt or GROUNDED_SYSTEM_PROMPT
 
         # Build user prompt
         user_prompt = f"""Context:

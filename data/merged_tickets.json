@@ -2765,15 +2765,408 @@
       "sla_minutes": 480,
       "assigned_to": "Email Team",
       "resolution_notes": "Root cause: Single-threaded email processing and lack of queue scaling. Resolution: 1) Implemented horizontal scaling of email worker processes from 1 to 8 workers. 2) Moved to Redis-backed job queue (Sidekiq/Bull) for better queue management. 3) Added exponential backoff and retry logic for failed deliveries (3 retries with 30s, 5min, 15min intervals). 4) Implemented batch email sending for non-critical notifications. 5) Added monitoring and alerting for queue depth (alert if >1000 messages). Email delivery latency reduced from 12 minutes to under 30 seconds."
+    },
+    {
+      "ticket_id": "INC980101",
+      "title": "[P1] Database Services: DB01 read replica replication lag over 15 minutes",
+      "description": "Issue: The DB01 read replica fell more than 15 minutes behind the primary during the nightly batch window. Environment: Database Services, PostgreSQL cluster DB01. Reports and dashboards served from the replica showed stale order data.",
+      "ticket_type": "Incident",
+      "service": "Database Services",
+      "severity": "Critical",
+      "priority": "P1",
+      "status": "Resolved",
+      "created_at": "2026-10-02T01:40:00",
+      "updated_at": "2026-10-02T03:05:00",
+      "user": {
+        "name": "Priya Nair",
+        "email": "priya.nair@company.com",
+        "team": "Finance",
+        "location": "London"
+      },
+      "tags": [
+        "database",
+        "replication",
+        "postgresql",
+        "production"
+      ],
+      "attachments": 2,
+      "sla_minutes": 60,
+      "assigned_to": "Database Team",
+      "resolution_notes": "Root cause: the nightly analytics export ran its heavy sequential scans against the replica, saturating disk I/O so WAL replay could not keep up. Resolution: 1) Moved the analytics export to the dedicated reporting replica DB01-R2. 2) Raised max_standby_streaming_delay from 30s to 5min so long queries no longer cancel replay. 3) Replication lag returned to under 5 seconds within 20 minutes."
+    },
+    {
+      "ticket_id": "CHG980102",
+      "title": "[P3] Monitoring & Alerts: Replication lag alerting for DB01 (follow-up to INC980101)",
+      "description": "Request: Follow-up to INC980101. Add alerting so replication lag on DB01 replicas is caught before reports go stale. Environment: Monitoring & Alerts, Prometheus and Alertmanager.",
+      "ticket_type": "Configuration Change",
+      "service": "Monitoring & Alerts",
+      "severity": "Medium",
+      "priority": "P3",
+      "status": "Closed",
+      "created_at": "2026-10-03T09:00:00",
+      "updated_at": "2026-10-06T15:20:00",
+      "user": {
+        "name": "Priya Nair",
+        "email": "priya.nair@company.com",
+        "team": "Finance",
+        "location": "London"
+      },
+      "tags": [
+        "monitoring",
+        "replication",
+        "alerting",
+        "database"
+      ],
+      "attachments": 0,
+      "sla_minutes": 1440,
+      "assigned_to": "Monitoring Team",
+      "resolution_notes": "Added a Prometheus alert on pg_replication_lag_seconds > 60 for 5 minutes, routed to the Database Team on-call rotation. Linked the replication lag runbook from the alert. Verified by pausing replay on a staging replica."
+    },
+    {
+      "ticket_id": "INC980201",
+      "title": "[P2] Email & Collaboration: Outbound email queue stuck after SMTP relay certificate expired",
+      "description": "Issue: Outbound email stopped leaving the company; about 2,300 messages queued on the SMTP relay. Environment: Email & Collaboration, Postfix relay smtp-relay-01. Partners reported missing invoices and notifications.",
+      "ticket_type": "Incident",
+      "service": "Email & Collaboration",
+      "severity": "High",
+      "priority": "P2",
+      "status": "Resolved",
+      "created_at": "2026-10-07T08:10:00",
+      "updated_at": "2026-10-07T09:55:00",
+      "user": {
+        "name": "Marcus Lee",
+        "email": "marcus.lee@company.com",
+        "team": "Sales",
+        "location": "Chicago"
+      },
+      "tags": [
+        "email",
+        "smtp",
+        "tls",
+        "certificate"
+      ],
+      "attachments": 0,
+      "sla_minutes": 120,
+      "assigned_to": "Messaging Team",
+      "resolution_notes": "Root cause: the TLS certificate on smtp-relay-01 expired at midnight, so receiving servers rejected the STARTTLS handshake. Resolution: 1) Installed a renewed certificate. 2) Reloaded Postfix. 3) Flushed the deferred queue; all 2,300 queued messages were delivered by 09:40."
+    },
+    {
+      "ticket_id": "CHG980202",
+      "title": "[P3] Security Operations: Automate SMTP relay certificate renewal (follow-up to INC980201)",
+      "description": "Request: Follow-up to INC980201. Replace the manual certificate renewal on the SMTP relays with automated renewal and expiry monitoring. Environment: Security Operations, certificate management.",
+      "ticket_type": "Configuration Change",
+      "service": "Security Operations",
+      "severity": "Medium",
+      "priority": "P3",
+      "status": "In Progress",
+      "created_at": "2026-10-08T10:00:00",
+      "updated_at": "2026-10-20T11:30:00",
+      "user": {
+        "name": "Marcus Lee",
+        "email": "marcus.lee@company.com",
+        "team": "Sales",
+        "location": "Chicago"
+      },
+      "tags": [
+        "certificate",
+        "automation",
+        "smtp",
+        "security"
+      ],
+      "attachments": 0,
+      "sla_minutes": 2880,
+      "assigned_to": "Security Team",
+      "resolution_notes": "In progress: cert-manager issuer configured and tested on smtp-relay-02. Rollout to smtp-relay-01 is scheduled for the next maintenance window. An expiry alert at 21 days before expiry is already active."
+    },
+    {
+      "ticket_id": "INC980301",
+      "title": "[P1] Cloud Services (AWS/Azure/GCP): Checkout API returning HTTP 503 during traffic peak",
+      "description": "Issue: The checkout API returned HTTP 503 errors for about 25 minutes during a marketing campaign peak. Environment: Cloud Services (AWS/Azure/GCP), checkout service autoscaling group. Customers could not complete orders.",
+      "ticket_type": "Incident",
+      "service": "Cloud Services (AWS/Azure/GCP)",
+      "severity": "Critical",
+      "priority": "P1",
+      "status": "Resolved",
+      "created_at": "2026-10-09T18:05:00",
+      "updated_at": "2026-10-09T19:10:00",
+      "user": {
+        "name": "Sofia Martinez",
+        "email": "sofia.martinez@company.com",
+        "team": "Marketing",
+        "location": "Austin"
+      },
+      "tags": [
+        "cloud",
+        "autoscaling",
+        "checkout",
+        "production"
+      ],
+      "attachments": 1,
+      "sla_minutes": 30,
+      "assigned_to": "Cloud Team",
+      "resolution_notes": "Root cause: the autoscaling group could not add instances because the account's regional vCPU quota was exhausted. Resolution: 1) Requested and received a vCPU quota increase from 256 to 512. 2) Raised the autoscaling group maximum from 24 to 40 instances. 3) Error rate dropped to zero once new instances passed health checks."
+    },
+    {
+      "ticket_id": "PRB980302",
+      "title": "[P2] Cloud Services (AWS/Azure/GCP): Capacity review and quota monitoring (follow-up to INC980301)",
+      "description": "Request: Follow-up to INC980301. Review checkout capacity planning and add monitoring for cloud quota usage so scaling does not hit a hard limit again. Environment: Cloud Services (AWS/Azure/GCP).",
+      "ticket_type": "Performance Issue",
+      "service": "Cloud Services (AWS/Azure/GCP)",
+      "severity": "Medium",
+      "priority": "P2",
+      "status": "Pending",
+      "created_at": "2026-10-10T09:30:00",
+      "updated_at": "2026-10-21T16:00:00",
+      "user": {
+        "name": "Sofia Martinez",
+        "email": "sofia.martinez@company.com",
+        "team": "Marketing",
+        "location": "Austin"
+      },
+      "tags": [
+        "cloud",
+        "capacity",
+        "quota",
+        "monitoring"
+      ],
+      "attachments": 0,
+      "sla_minutes": 480,
+      "assigned_to": "Cloud Team",
+      "resolution_notes": "Pending: a quota usage dashboard and an alert at 80% of the vCPU quota are in place. Reserved capacity for campaign peaks is awaiting finance approval."
+    },
+    {
+      "ticket_id": "INC980401",
+      "title": "[P2] Backup & Recovery: Nightly backup jobs failing because the backup volume is full",
+      "description": "Issue: Nightly backup jobs failed for three nights with 'No space left on device'. Environment: Backup & Recovery, backup server bkp-01. Disk full on the backup volume.",
+      "ticket_type": "Incident",
+      "service": "Backup & Recovery",
+      "severity": "High",
+      "priority": "P2",
+      "status": "Resolved",
+      "created_at": "2026-10-11T06:30:00",
+      "updated_at": "2026-10-11T12:15:00",
+      "user": {
+        "name": "Daniel Okafor",
+        "email": "daniel.okafor@company.com",
+        "team": "Operations",
+        "location": "Seattle"
+      },
+      "tags": [
+        "backup",
+        "disk-full",
+        "storage",
+        "retention"
+      ],
+      "attachments": 0,
+      "sla_minutes": 240,
+      "assigned_to": "Storage Team",
+      "resolution_notes": "Root cause: snapshot retention was still 90 days after the data volume doubled. Resolution: 1) Reduced backup retention from 90 to 30 days. 2) Purged 4 TB of expired snapshots. 3) Re-ran the failed backups successfully."
+    },
+    {
+      "ticket_id": "INC980402",
+      "title": "[P3] Monitoring & Alerts: Prometheus stopped scraping targets because the metrics disk is full",
+      "description": "Issue: Dashboards showed gaps and Prometheus stopped scraping targets. Environment: Monitoring & Alerts, Prometheus server mon-01. Disk full on the metrics volume.",
+      "ticket_type": "Incident",
+      "service": "Monitoring & Alerts",
+      "severity": "Medium",
+      "priority": "P3",
+      "status": "Resolved",
+      "created_at": "2026-10-12T14:00:00",
+      "updated_at": "2026-10-12T17:45:00",
+      "user": {
+        "name": "Hannah Schmidt",
+        "email": "hannah.schmidt@company.com",
+        "team": "Engineering",
+        "location": "Berlin"
+      },
+      "tags": [
+        "monitoring",
+        "disk-full",
+        "prometheus",
+        "storage"
+      ],
+      "attachments": 0,
+      "sla_minutes": 480,
+      "assigned_to": "Monitoring Team",
+      "resolution_notes": "Root cause: high-cardinality metrics from a new service grew the TSDB faster than planned. Resolution: 1) Reduced TSDB retention from 30 to 15 days. 2) Dropped the high-cardinality request_id label at scrape time. 3) Extended the metrics volume from 200 GB to 500 GB."
+    },
+    {
+      "ticket_id": "BUG980403",
+      "title": "[P3] Application Support: Order service crashes because unrotated debug logs fill the disk",
+      "description": "Issue: The order service crashed repeatedly on two hosts. Environment: Application Support, order-service. Disk full on /var/log caused by debug logging.",
+      "ticket_type": "Bug Report",
+      "service": "Application Support",
+      "severity": "Medium",
+      "priority": "P3",
+      "status": "Closed",
+      "created_at": "2026-10-13T10:20:00",
+      "updated_at": "2026-10-14T09:00:00",
+      "user": {
+        "name": "Hannah Schmidt",
+        "email": "hannah.schmidt@company.com",
+        "team": "Engineering",
+        "location": "Berlin"
+      },
+      "tags": [
+        "application",
+        "disk-full",
+        "logging",
+        "bug"
+      ],
+      "attachments": 0,
+      "sla_minutes": 480,
+      "assigned_to": "Application Team",
+      "resolution_notes": "Root cause: debug logging was left enabled after a release and logrotate was not configured for the service. Resolution: 1) Set the log level back to INFO. 2) Added a daily logrotate policy keeping 7 compressed files. 3) Added a disk usage alert at 85%."
+    },
+    {
+      "ticket_id": "INC980501",
+      "title": "[P2] Network Infrastructure: Remote users disconnected from VPN every 60 minutes",
+      "description": "Issue: Remote users were disconnected from the corporate VPN exactly every hour and had to reconnect. Environment: Network Infrastructure, site-to-client VPN gateways.",
+      "ticket_type": "Incident",
+      "service": "Network Infrastructure",
+      "severity": "High",
+      "priority": "P2",
+      "status": "Resolved",
+      "created_at": "2026-10-14T08:45:00",
+      "updated_at": "2026-10-14T13:30:00",
+      "user": {
+        "name": "Liam O'Brien",
+        "email": "liam.o'brien@company.com",
+        "team": "Support",
+        "location": "Dublin"
+      },
+      "tags": [
+        "network",
+        "vpn",
+        "ipsec",
+        "remote-access"
+      ],
+      "attachments": 0,
+      "sla_minutes": 120,
+      "assigned_to": "Network Team",
+      "resolution_notes": "Root cause: the IPsec phase 2 rekey lifetime differed between the two VPN gateways (3600s vs 28800s), so rekeying failed and sessions dropped. Resolution: aligned the phase 2 lifetime to 28800 seconds on both gateways and enabled dead peer detection."
+    },
+    {
+      "ticket_id": "INC980502",
+      "title": "[P4] Hardware Support: Laptop VPN connection drops when the docking station is connected",
+      "description": "Issue: A user's laptop VPN connection dropped every few minutes, but only while connected to the docking station. Environment: Hardware Support, standard engineering laptop with USB-C dock.",
+      "ticket_type": "Incident",
+      "service": "Hardware Support",
+      "severity": "Low",
+      "priority": "P4",
+      "status": "Resolved",
+      "created_at": "2026-10-15T11:00:00",
+      "updated_at": "2026-10-16T10:15:00",
+      "user": {
+        "name": "Liam O'Brien",
+        "email": "liam.o'brien@company.com",
+        "team": "Support",
+        "location": "Dublin"
+      },
+      "tags": [
+        "hardware",
+        "vpn",
+        "docking-station",
+        "laptop"
+      ],
+      "attachments": 0,
+      "sla_minutes": 1440,
+      "assigned_to": "Desktop Support",
+      "resolution_notes": "Root cause: the dock's network adapter firmware toggled between wired and Wi-Fi interfaces under power saving. Resolution: 1) Updated the docking station firmware. 2) Disabled power saving on the dock network adapter. 3) Confirmed a stable VPN session for a full day."
+    },
+    {
+      "ticket_id": "ACC980601",
+      "title": "[P3] User Access & Authentication: New hires not receiving MFA enrollment emails",
+      "description": "Issue: Three new hires starting this week did not receive their MFA enrollment emails, so they cannot sign in. Environment: User Access & Authentication, identity provider onboarding flow.",
+      "ticket_type": "Account Issue",
+      "service": "User Access & Authentication",
+      "severity": "Medium",
+      "priority": "P3",
+      "status": "New",
+      "created_at": "2026-10-21T09:10:00",
+      "updated_at": "2026-10-21T09:10:00",
+      "user": {
+        "name": "Grace Kim",
+        "email": "grace.kim@company.com",
+        "team": "HR",
+        "location": "Toronto"
+      },
+      "tags": [
+        "authentication",
+        "mfa",
+        "onboarding",
+        "email"
+      ],
+      "attachments": 0,
+      "sla_minutes": 720,
+      "assigned_to": "Identity Team",
+      "resolution_notes": ""
+    },
+    {
+      "ticket_id": "SEC980701",
+      "title": "[P1] Security Operations: Credential stuffing attack blocked on the customer login page",
+      "description": "Issue: Thousands of failed customer logins per minute from a small set of IP ranges. Environment: Security Operations, customer login page behind the WAF.",
+      "ticket_type": "Security Issue",
+      "service": "Security Operations",
+      "severity": "Critical",
+      "priority": "P1",
+      "status": "Resolved",
+      "created_at": "2026-10-17T02:15:00",
+      "updated_at": "2026-10-17T02:50:00",
+      "user": {
+        "name": "Omar Haddad",
+        "email": "omar.haddad@company.com",
+        "team": "Security",
+        "location": "New York"
+      },
+      "tags": [
+        "security",
+        "waf",
+        "credential-stuffing",
+        "login"
+      ],
+      "attachments": 0,
+      "sla_minutes": 15,
+      "assigned_to": "Security Team",
+      "resolution_notes": "Resolution: 1) Blocked the attacking IP ranges at the WAF. 2) Enabled rate limiting of 5 login attempts per minute per IP. 3) Forced password resets for the 12 accounts with successful logins from those ranges. 4) No further suspicious logins were seen."
+    },
+    {
+      "ticket_id": "PRF980801",
+      "title": "[P2] Database Services: Reporting queries on DB02 timing out after schema migration",
+      "description": "Issue: Monthly reporting queries on DB02 started timing out after the weekend schema migration. Environment: Database Services, PostgreSQL DB02. Finance cannot run month-end reports.",
+      "ticket_type": "Performance Issue",
+      "service": "Database Services",
+      "severity": "High",
+      "priority": "P2",
+      "status": "In Progress",
+      "created_at": "2026-10-19T08:00:00",
+      "updated_at": "2026-10-22T17:30:00",
+      "user": {
+        "name": "Priya Nair",
+        "email": "priya.nair@company.com",
+        "team": "Finance",
+        "location": "London"
+      },
+      "tags": [
+        "database",
+        "performance",
+        "migration",
+        "reporting"
+      ],
+      "attachments": 0,
+      "sla_minutes": 240,
+      "assigned_to": "Database Team",
+      "resolution_notes": "Investigation: the migration dropped the index on orders.created_at, so reporting queries now scan the full table. The index rebuild is scheduled for the Saturday maintenance window; reports can run on DB01-R2 until then."
     }
   ],
   "metadata": {
-    "generated_at": "2026-10-16T12:00:00.000000",
-    "count": 106,
-    "description": "Merged synthetic tickets with latency fix examples for RAG testing",
+    "generated_at": "2026-10-23T16:54:37",
+    "count": 120,
+    "description": "Merged synthetic tickets with latency fix examples and curated agentic demo tickets for RAG testing",
     "sources": [
       "synthetic_tickets.json",
-      "latency_fix_tickets.json"
+      "latency_fix_tickets.json",
+      "agentic_demo_tickets.json"
     ]
   }
 }

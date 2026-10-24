@@ -17,7 +17,7 @@ import os
 import json
 import re
 import time
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, Callable
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
@@ -357,3 +357,239 @@ def compute_basic_metrics(answer: str, ground_truth: str) -> Dict[str, float]:
         "answer_quality": evaluator._evaluate_answer_quality(answer, ground_truth),
         "hallucination": evaluator._detect_hallucination(answer, ground_truth)
     }
+
+
+# ---------------------------------------------------------------------------
+# Golden-set evaluation: agentic loop vs the single-pass `answer` baseline
+# ---------------------------------------------------------------------------
+
+GOLDEN_TAGS = ("1x", "2x", "nx", "unanswerable")
+
+
+@dataclass
+class GoldenRunOutput:
+    """What one runner returned for one golden query."""
+    answer: str
+    cited_ticket_ids: List[str]           # Citations in the returned answer that are in the grounded allow-list
+    refused: bool
+    partial: bool = False
+    iterations: int = 1
+    llm_calls: int = 0
+    total_tokens: int = 0
+    latency_ms: float = 0.0
+    grounded_ticket_ids: List[str] = field(default_factory=list)
+    stop_reason: Optional[str] = None
+    fallbacks: List[str] = field(default_factory=list)
+
+
+def load_golden_set(path: str) -> List[Dict[str, Any]]:
+    """Load golden queries from a JSON list or a {"queries": [...]} object."""
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    entries = data.get("queries", []) if isinstance(data, dict) else data
+    errors = validate_golden_set(entries)
+    if errors:
+        raise ValueError(f"Invalid golden set {path}: " + "; ".join(errors))
+    return entries
+
+
+def validate_golden_set(entries: List[Dict[str, Any]], ticket_ids: Optional[set] = None) -> List[str]:
+    """Problems with a golden set (empty list = valid).
+
+    Args:
+        entries: Golden queries
+        ticket_ids: Known ticket IDs; when given, every expected ID must be one of them
+    """
+    errors = []
+    seen = set()
+    for i, entry in enumerate(entries):
+        label = entry.get("id", f"#{i}") if isinstance(entry, dict) else f"#{i}"
+        if not isinstance(entry, dict):
+            errors.append(f"{label}: not an object")
+            continue
+        if not entry.get("id") or entry["id"] in seen:
+            errors.append(f"{label}: missing or duplicate id")
+        seen.add(entry.get("id"))
+        if not isinstance(entry.get("query"), str) or not entry["query"].strip():
+            errors.append(f"{label}: missing query")
+        if entry.get("tag") not in GOLDEN_TAGS:
+            errors.append(f"{label}: tag must be one of {', '.join(GOLDEN_TAGS)}")
+        expected = entry.get("expected_ticket_ids")
+        if not isinstance(expected, list):
+            errors.append(f"{label}: expected_ticket_ids must be a list")
+            continue
+        if entry.get("tag") == "unanswerable" and expected:
+            errors.append(f"{label}: unanswerable queries expect no tickets")
+        if entry.get("tag") in ("1x", "2x", "nx") and not expected:
+            errors.append(f"{label}: answerable queries need expected tickets")
+        if ticket_ids is not None:
+            missing = [t for t in expected if t not in ticket_ids]
+            if missing:
+                errors.append(f"{label}: unknown ticket IDs {', '.join(missing)}")
+    return errors
+
+
+def citation_recall(cited: List[str], expected: List[str]) -> Optional[float]:
+    """|cited ∩ expected| / |expected|; None when nothing is expected."""
+    if not expected:
+        return None
+    return len(set(cited) & set(expected)) / len(set(expected))
+
+
+def citation_precision(cited: List[str], expected: List[str]) -> Optional[float]:
+    """|cited ∩ expected| / |cited|; 1.0 when nothing is cited and nothing is expected.
+
+    None when nothing is cited but tickets were expected (recall reports that miss).
+    """
+    if not cited:
+        return 1.0 if not expected else None
+    return len(set(cited) & set(expected)) / len(set(cited))
+
+
+def refusal_correct(refused: bool, tag: str) -> bool:
+    """True when the system refused exactly on an unanswerable query."""
+    return refused == (tag == "unanswerable")
+
+
+def _mean(values: List[Optional[float]]) -> Optional[float]:
+    values = [v for v in values if v is not None]
+    return sum(values) / len(values) if values else None
+
+
+class GoldenSetEvaluator:
+    """Runs golden queries through one or more runners and computes deterministic metrics."""
+
+    METRICS = ("recall", "precision", "refusal_correct")
+
+    def __init__(self, runners: Dict[str, Callable[[str], GoldenRunOutput]]):
+        self.runners = runners
+
+    @staticmethod
+    def score(entry: Dict[str, Any], output: GoldenRunOutput) -> Dict[str, Any]:
+        expected = entry["expected_ticket_ids"]
+        return {
+            "recall": citation_recall(output.cited_ticket_ids, expected),
+            "precision": citation_precision(output.cited_ticket_ids, expected),
+            "refusal_correct": refusal_correct(output.refused, entry["tag"]),
+            "refused": output.refused,
+            "partial": output.partial,
+            "iterations": output.iterations,
+            "llm_calls": output.llm_calls,
+            "total_tokens": output.total_tokens,
+            "latency_ms": round(output.latency_ms, 1),
+            "cited_ticket_ids": output.cited_ticket_ids,
+            "grounded_ticket_ids": output.grounded_ticket_ids,
+            "stop_reason": output.stop_reason,
+            "fallbacks": output.fallbacks,
+            "answer": output.answer,
+        }
+
+    @staticmethod
+    def aggregate(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+        ok = [r for r in rows if "error" not in r]
+        return {
+            "queries": len(rows),
+            "errors": len(rows) - len(ok),
+            "recall": _mean([r["recall"] for r in ok]),
+            "precision": _mean([r["precision"] for r in ok]),
+            "refusal_correct": _mean([1.0 if r["refusal_correct"] else 0.0 for r in ok]),
+            "iterations": _mean([r["iterations"] for r in ok]),
+            "llm_calls": _mean([r["llm_calls"] for r in ok]),
+            "total_tokens": _mean([r["total_tokens"] for r in ok]),
+            "latency_ms": _mean([r["latency_ms"] for r in ok]),
+            "partial_rate": _mean([1.0 if r["partial"] else 0.0 for r in ok]),
+            "fallbacks": sum(len(r["fallbacks"]) for r in ok),
+        }
+
+    def evaluate(self, entries: List[Dict[str, Any]], progress: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+        per_query = []
+        for entry in entries:
+            row = {"id": entry["id"], "query": entry["query"], "tag": entry["tag"],
+                   "expected_ticket_ids": entry["expected_ticket_ids"], "results": {}}
+            for name, runner in self.runners.items():
+                if progress:
+                    progress(f"{entry['id']} [{name}] {entry['query']}")
+                try:
+                    row["results"][name] = self.score(entry, runner(entry["query"]))
+                except Exception as e:
+                    row["results"][name] = {"error": str(e)}
+            per_query.append(row)
+
+        aggregates = {}
+        for name in self.runners:
+            by_tag = {}
+            for tag in GOLDEN_TAGS:
+                rows = [q["results"][name] for q in per_query if q["tag"] == tag]
+                if rows:
+                    by_tag[tag] = self.aggregate(rows)
+            by_tag["all"] = self.aggregate([q["results"][name] for q in per_query])
+            aggregates[name] = by_tag
+
+        result = {"per_query": per_query, "aggregates": aggregates}
+        if "baseline" in aggregates and "agent" in aggregates:
+            result["deltas"] = {
+                tag: {
+                    metric: (None if aggregates["agent"][tag][metric] is None
+                             or aggregates["baseline"][tag][metric] is None
+                             else aggregates["agent"][tag][metric] - aggregates["baseline"][tag][metric])
+                    for metric in self.METRICS
+                }
+                for tag in aggregates["agent"]
+                if tag in aggregates["baseline"]
+            }
+        return result
+
+
+def make_baseline_runner(rag_pipeline: Any, top_k: int = 5) -> Callable[[str], GoldenRunOutput]:
+    """The single-pass `answer` path (SdAgenticRAGPipeline.generate_answer) as a golden-set runner."""
+    from sd_agentic_rag.sd_agentic_guard import Guardrails, STANDARD_REFUSAL
+    guardrails = Guardrails()
+
+    def run(query: str) -> GoldenRunOutput:
+        start = time.time()
+        result = rag_pipeline.generate_answer(query, top_k=top_k)
+        latency_ms = (time.time() - start) * 1000
+        answer_obj = result.get("answer")
+        answer = getattr(answer_obj, "answer", "") if answer_obj else STANDARD_REFUSAL
+        grounded = result.get("grounded_context")
+        grounded_ids = [c["ticket_id"] for c in getattr(grounded, "citations", [])] if grounded else []
+        cited = list(dict.fromkeys(t for t in guardrails.extract_citations(answer) if t in grounded_ids))
+        refused = guardrails.check_refusal(answer)
+        return GoldenRunOutput(
+            answer=answer,
+            cited_ticket_ids=[] if refused else cited,
+            refused=refused,
+            iterations=1,
+            llm_calls=1 if answer_obj else 0,
+            total_tokens=getattr(answer_obj, "total_tokens", 0) if answer_obj else 0,
+            latency_ms=latency_ms,
+            grounded_ticket_ids=grounded_ids,
+        )
+
+    return run
+
+
+def make_agent_runner(rag_pipeline: Any, config: Any = None) -> Callable[[str], GoldenRunOutput]:
+    """The agentic loop, with memory disabled, as a golden-set runner."""
+    from sd_agentic_rag.agent import AgentConfig, AgenticRAGLoop
+    config = (config or AgentConfig.load()).with_overrides(no_memory=True)
+    loop = AgenticRAGLoop(rag_pipeline, config)
+
+    def run(query: str) -> GoldenRunOutput:
+        start = time.time()
+        turn = loop.run_turn(query)
+        return GoldenRunOutput(
+            answer=turn.answer,
+            cited_ticket_ids=turn.cited_ticket_ids,
+            refused=turn.refused,
+            partial=turn.partial,
+            iterations=turn.loop["iterations"],
+            llm_calls=turn.loop["llm_calls"],
+            total_tokens=turn.loop["total_tokens"],
+            latency_ms=(time.time() - start) * 1000,
+            grounded_ticket_ids=turn.grounded_ticket_ids,
+            stop_reason=turn.stop_reason,
+            fallbacks=list(turn.loop.get("fallbacks", [])),
+        )
+
+    return run

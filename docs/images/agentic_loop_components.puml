@@ -1,0 +1,54 @@
+@startuml agentic_loop_components
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam roundCorner 8
+skinparam defaultTextAlignment center
+title Agentic RAG in sd-agentic-rag — "same 7 stages, last 4 in a Loop"
+
+actor "User\n(sd-agentic-rag agent)" as USER
+
+package "PHASE 1 · OFFLINE (frozen · unchanged)" {
+  component "Ingest\nSdAgenticIngest" as ING
+  component "Embed\nEmbeddingService" as EMB
+  database "Store\nQdrant tickets__<model>\n+ in-process BM25" as STO
+  ING --> EMB
+  EMB --> STO
+}
+
+rectangle "AgentGuard (wrapper) · PII redaction of question + evidence · BudgetTracker (iterations · LLM calls · tokens · wall clock · revisions) · final Guardrails.process_answer · TraceRecorder" as GUARD #FFF3CD {
+  package "PHASE 2 · ONLINE — AgenticRAGLoop.run_turn()" {
+    component "Planner\nllm | heuristic\n(sub-goals · tool · filters · refine)" as PLAN
+    component "Tools\nretrieve · lookup · filtered_retrieve" as TOOLS
+    component "Re-rank\nReRankerPipeline\n(retrieve tools)" as RERANK
+    component "Ground\nContextGrounding per sub-goal\n→ merge → truncate (allow-list)" as GROUND
+    component "Critic\nllm | heuristic | both\n(enough evidence?)" as CRITIC
+    component "Generate\nAnswerGenerator\n(grounded context only)" as GEN
+    component "Self-Review\nallow-list · min citations ·\ncited-sentence ratio (+ llm tighten)" as REVIEW
+  }
+}
+
+database "AgentMemory (SQLite)\nthreads · turns · steps (append-only) ·\nresolutions (per embedding model)" as MEM
+
+USER   --> PLAN    : 1. question
+REVIEW --> GUARD   : passed draft
+GUARD  --> USER    : 2. answer · citations · partial · loop · trace
+PLAN   --> TOOLS   : open sub-goals
+TOOLS  --> RERANK
+RERANK --> GROUND
+TOOLS  ..> STO     : hybrid / ID / filtered query
+GROUND --> CRITIC
+CRITIC --> GEN     : sufficient
+CRITIC --> PLAN    : insufficient → refine
+GEN    --> REVIEW  : draft
+REVIEW --> GEN     : revise (same evidence)
+REVIEW --> PLAN    : failed again → refine
+MEM    --> PLAN    : recent turns + cited IDs · past-resolution hints
+GUARD  ..> MEM     : turn · steps · resolution (redacted)
+
+note bottom
+  **Bounded autonomy:** LLMs choose order and repetition only — tools come from a fixed registry,
+  every passage passes Ground, only grounded ticket IDs are citable, deterministic gates cannot be overridden.
+  **Exhaustion:** budget hit ⇒ one reserved best-effort draft over all grounded evidence, gated, flagged partial — else refusal.
+  **1×:** --max-iterations 1 ⇒ heuristic "retrieve once" plan = the base answer pipeline.
+end note
+@enduml

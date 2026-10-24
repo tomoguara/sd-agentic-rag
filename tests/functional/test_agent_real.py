@@ -35,10 +35,16 @@ def pipeline():
         skip_if_unavailable(e, "Qdrant")
     from sd_agentic_rag.agent.tools import LookupTool
     from sd_agentic_rag.agent.state import SubGoal
+    from sd_agentic_rag.model_selector import ModelSelector
     demo = LookupTool(pipeline.vector_store).run(
         SubGoal(id="g", query="check", tool="lookup", ticket_id="INC980101"), top_k=1)
-    assert demo, ("Demo tickets are not indexed for this provider: run "
-                  "`sd-agentic-rag ingest --data-path data/merged_tickets.json --wipe`")
+    # Each embedding model has its own collection, so name the one that was checked
+    use_ollama = ModelSelector().use_ollama
+    provider = "Ollama" if use_ollama else "OpenAI"
+    assert demo, (f"Demo tickets are not indexed for the {provider} provider "
+                  f"(collection '{pipeline.vector_store.collection_name}'): run "
+                  f"`USE_OLLAMA_MODELS={str(use_ollama).lower()} uv run sd-agentic-rag ingest "
+                  f"--data-path data/merged_tickets.json --wipe`")
     return pipeline
 
 
